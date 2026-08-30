@@ -1,632 +1,595 @@
-# 🕵️ OSINT-2026 — الخطة العملاقة (Master Plan)
+# 🕵️ OSINT-2026 — الخطة العملاقة v2 (Master Plan)
 
-> **الاسم المقترح للأداة:** `OSINT-2026` (اسم كودي داخلي: **`Argus`** — العملاق ذو المئة عين في الأساطير، رمز المراقبة الكاملة)
->
-> **الحالة:** خطة (Planning Phase) — لم يبدأ البناء بعد.
+> **الاسم الكودي:** `Argus` — العملاق ذو المئة عين (رمز المراقبة الكاملة).
+> **الحالة:** خطة (Planning) — v2 مطوّرة بعمق.
 > **آخر تحديث:** 2026-08-30
-> **الجمهور المستهدف:** محلل/موظف أمن سيبراني يحتاج فحوصات OSINT متكررة (دومين شركة / إيميلات موظفين / أرقام جوالات).
+> **الجمهور:** محلل أمن سيبراني بمنصب عالٍ يحتاج فحص OSINT كامل واحترافي معتمد عليه 100%.
 
 ---
 
-## 📑 فهرس الوثيقة
+## 🔑 المبدأ الحاكم الجديد (v2): **صفر مفاتيح API إلزامية (Zero-API-First)**
 
-1. [الرؤية والأهداف](#1)
-2. [المشكلة الحالية والحل](#2)
-3. [المبادئ الحاكمة (Design Principles)](#3)
-4. [المعمارية العامة (High-Level Architecture)](#4)
-5. [محرك الكشف التلقائي عن نوع الهدف (Target Detection Engine)](#5)
-6. [كتالوج الأدوات الخارجية الكامل](#6)
-7. [السكربتات الخاصة بنا (Custom Scripts / Native Modules)](#7)
-8. [نظام الإدارة والتشغيل (Orchestrator)](#8)
-9. [نظام النتائج والتقارير (Reporting Engine)](#9)
-10. [نظام التثبيت والتجهيز التلقائي (Installer)](#10)
-11. [هيكل المجلدات الكامل](#11)
-12. [الأمان والأخلاقيات والقانون (OPSEC & Legal)](#12)
-13. [خارطة الطريق المرحلية (Roadmap / Phases)](#13)
-14. [معايير النجاح (Definition of Done)](#14)
+بناءً على توجيهك: **الأداة يجب أن تعمل بكامل طاقتها بدون أي مفتاح API**. نحقق هذا عبر ثلاث طبقات:
+
+1. **مصادر عامة مفتوحة لا تتطلب مفاتيح** (crt.sh، Wayback، DNS، Ahmia، XposedOrNot، ProxyNova COMB، PGP keyservers، RDAP، محركات بحث بديلة).
+2. **كشط ذكي مؤتمت (Smart Scraping)** بأسلوب متصفح حقيقي (Playwright/headless + rotation + تأخير عشوائي) لتجاوز الحظر — للمصادر التي لا توفر API.
+3. **محرك بحث محايد ذاتي الاستضافة (SearXNG محلي)** بدل كشط Google مباشرة (Google صار يمنع الكشط بـ CAPTCHA/TLS fingerprint) — يجمع من 70+ محرك بحث دفعة واحدة بلا حظر.
+
+> **المفاتيح تبقى اختيارية 100%:** إن وُجد مفتاح (Shodan مثلاً) يُفعّل مصدراً إضافياً؛ إن لم يوجد، بديل مجاني يقوم بالمهمة. **لا شيء يتعطّل بغياب المفاتيح.**
 
 ---
 
-<a name="1"></a>
+## 📑 الفهرس
+
+1. [الرؤية والأهداف](#s1)
+2. [كيف نجمع كل شيء بدون API — الاستراتيجية التقنية](#s2)
+3. [المبادئ الحاكمة](#s3)
+4. [المعمارية الكاملة](#s4)
+5. [محرك الكشف التلقائي عن الهدف](#s5)
+6. [التغطية الكاملة — مصفوفة الجوانب (Coverage Matrix)](#s6)
+7. [كتالوج الأدوات الخارجية](#s7)
+8. [السكربتات الخاصة — الوصفة السرية](#s8)
+9. [محرك Google/GitHub/Dark-Web Dorking](#s9)
+10. [نظام الإدارة والتشغيل (Orchestrator)](#s10)
+11. [نظام التقارير الاحترافي](#s11)
+12. [المُثبّت التلقائي + Docker](#s12)
+13. [هيكل المجلدات](#s13)
+14. [الأمان والقانون (OPSEC)](#s14)
+15. [خارطة الطريق المرحلية](#s15)
+16. [معايير النجاح](#s16)
+
+---
+
+<a name="s1"></a>
 ## 1. الرؤية والأهداف
 
-### 1.1 الرؤية
-بناء **إطار عمل OSINT موحّد (Unified OSINT Framework)** احترافي، مفتوح، قابل للتوسّع للأبد، يحوّل عملية جمع المعلومات من "تشغيل عشرات الأدوات يدوياً" إلى **أمر واحد**:
+### 1.1 السيناريو المستهدف (حرفياً كما وصفته)
+```bash
+argus scan company.com
+```
+تدخل دومين الشركة → تحصل على **كل ما يمكن جمعه** عن: الشركة، الموقع، البنية التحتية، الموظفين، إيميلاتهم، تسريباتهم، حساباتهم، الأصول المخفية، التسريبات على GitHub، ما ظهر في Google Dorks، وما ظهر في الـ Dark Web — **تقرير احترافي مرتب دقيق**، بأمر واحد، بدون تشغيل يدوي ولا مفاتيح.
 
 ```bash
-argus scan example.com
-argus scan john.doe@company.com
-argus scan +966501234567
-argus scan johndoe        # username
+argus scan ahmed@company.com     # كل شيء عن الإيميل
+argus scan +966501234567         # كل شيء عن الرقم
 ```
 
-يتعرّف تلقائياً على نوع الهدف، يشغّل الأدوات والسكربتات المناسبة بالتوازي، يجمّع النتائج، يزيل التكرار، ويخرج تقريراً موحّداً (HTML/JSON/PDF/Markdown).
-
-### 1.2 الأهداف الإلزامية (Hard Requirements)
-| # | الهدف | المعيار |
-|---|-------|---------|
-| G1 | **تغطية كاملة حرفياً** | كل نوع هدف (دومين، إيميل، هاتف، username، IP، اسم شخص، شركة) له تغطية من أدوات + سكربتات خاصة تسدّ الفجوات |
-| G2 | **اختصار الوقت فعلياً** | أمر واحد يحل محل تشغيل 10-30 أداة يدوياً؛ تشغيل متوازٍ |
-| G3 | **كشف تلقائي للهدف** | لا حاجة لتحديد النوع يدوياً — المحرك يستنتجه |
-| G4 | **تثبيت بأمر واحد** | `git clone` ثم تشغيل ملف واحد يجهّز كل شيء ويتحقق منه |
-| G5 | **يعمل على Linux (أولوية)** | ودعم Windows/Mac إن أمكن، وإلا Linux فقط مقبول |
-| G6 | **قابل للتوسّع للأبد** | إضافة أداة/سكربت جديد = ملف plugin واحد بدون تعديل النواة |
-
-### 1.3 أهداف ثانوية (Nice to Have)
-- واجهة ويب محلية اختيارية (Dashboard).
-- جدولة فحوصات دورية (monitoring / continuous OSINT).
-- مقارنة نتائج بين فحصين (diff — "ماذا تغيّر منذ آخر فحص؟").
-- تكامل مع نظام التذاكر/التنبيهات في الشركة.
+### 1.2 الأهداف الإلزامية
+| # | الهدف | المعيار القابل للقياس |
+|---|-------|----------------------|
+| G1 | **تغطية كل الجوانب حرفياً** | مصفوفة تغطية (القسم 6) — لا جانب واحد مكشوف |
+| G2 | **معتمد عليه 100%** | كل نتيجة لها مصدر + درجة ثقة + دليل (evidence) |
+| G3 | **بدون API إلزامي** | كل الأنواع تعمل بلا مفتاح واحد |
+| G4 | **كشف تلقائي للهدف** | لا تحديد يدوي |
+| G5 | **تقرير احترافي مرتب** | HTML/PDF/JSON مع تصنيف ومخاطر وتوصيات |
+| G6 | **اختصار وقت فعلي** | أمر واحد = عشرات الأدوات بالتوازي |
+| G7 | **تثبيت بأمر واحد** | git clone → install → يعمل |
+| G8 | **للأبد / قابل للتوسّع** | إضافة مصدر = ملف plugin واحد |
 
 ---
 
-<a name="2"></a>
-## 2. المشكلة الحالية والحل
+<a name="s2"></a>
+## 2. كيف نجمع كل شيء بدون API — الاستراتيجية التقنية (جوهر v2)
 
-### 2.1 نقاط الألم (Pain Points)
-- تشغيل أداة تلو الأخرى يدوياً (theHarvester ثم amass ثم holehe ثم...).
-- كل أداة لها صيغة مخرجات مختلفة (JSON/CSV/نص/XML).
-- تجميع النتائج ودمجها وإزالة التكرار يدوياً.
-- إعادة كتابة التقرير كل مرة.
-- إدارة API keys المتناثرة.
-- تثبيت وتحديث كل أداة على حدة.
+> هذا القسم يجيب سؤالك: "مانحتاج API، نقدر نسوي سكربتات تجيب كل شي".
 
-### 2.2 الحل
-طبقة تنسيق (Orchestration Layer) واحدة فوق كل الأدوات + محرك تطبيع (Normalization) + محرك ربط (Correlation) + مولّد تقارير موحّد + مُثبِّت ذكي.
+### 2.1 المصادر العامة المجانية بلا مفاتيح (Free Public Sources)
+| المصدر | ماذا يعطي | كيف نصل بلا مفتاح |
+|--------|-----------|-------------------|
+| **crt.sh** | كل النطاقات الفرعية من شهادات SSL | JSON endpoint عام مباشر |
+| **Certificate Transparency logs** (Censys CT، Google CT) | شهادات ونطاقات | زحف مباشر |
+| **Wayback Machine / CDX API** | كل روابط/مسارات/ملفات الموقع تاريخياً | API عام بلا مفتاح |
+| **Common Crawl Index** | فهرس ضخم لصفحات الويب | API عام |
+| **DNS مباشر** (A/AAAA/MX/NS/TXT/CNAME/SOA/DNSSEC) | البنية التحتية | استعلام DNS مباشر |
+| **RDAP / WHOIS** | مالك النطاق، تواريخ، nameservers | RDAP بروتوكول عام مجاني |
+| **PGP keyservers** (keys.openpgp.org) | إيميلات مرتبطة بالنطاق | بحث عام |
+| **XposedOrNot API** | فحص تسريب الإيميل | **مجاني بلا مفتاح** |
+| **ProxyNova COMB** | بحث في أكبر تجميعة تسريبات | endpoint عام |
+| **Ahmia.fi** | فهرس Dark Web (.onion) | بحث عام + عبر Tor |
+| **libphonenumber** (offline) | تحليل الهاتف بالكامل | مكتبة محلية بلا نت |
+| **GitHub/GitLab code search (web)** | تسريبات أسرار وأكواد | كشط نتائج البحث العام |
+| **Gravatar** | صورة/ملف مرتبط بالإيميل | hash عام |
+| **HackerTarget (محدود مجاني)** | DNS/subdomain/reverse IP | حد مجاني بلا مفتاح |
+| **ThreatCrowd / AlienVault OTX (عام)** | passive DNS، سمعة | endpoints عامة |
 
-```
-مدخل واحد  →  كشف النوع  →  اختيار الوحدات  →  تشغيل متوازٍ  →  تطبيع  →  ربط وإزالة تكرار  →  تقرير موحّد
-```
+### 2.2 الكشط الذكي (Smart Scraping Engine)
+لأن بعض المصادر (Google، LinkedIn، Truecaller) تمنع الوصول الآلي، نبني **محرك كشط احترافي**:
+- **Headless browser** (Playwright) يحاكي متصفحاً حقيقياً (User-Agent، TLS، cookies، JS rendering) → يتجاوز الحظر البسيط.
+- **Rotation:** تدوير User-Agents + proxies (اختياري) + Tor.
+- **Human-like:** تأخير عشوائي، حركة، تمرير — لتفادي كشف البوت.
+- **Fallback chain:** إن فشل مصدر، ينتقل تلقائياً للبديل.
+- **Rate limiting + caching:** لا نضرب نفس المصدر مرتين، ولا نتجاوز الحدود.
+
+### 2.3 محرك البحث المحايد (SearXNG المحلي) — بدل كشط Google
+- ننشر **SearXNG** محلياً (حاوية Docker صغيرة) — meta-search يجمع نتائج 70+ محرك (Google, Bing, DuckDuckGo, Brave, Yandex, Mojeek...) عبر واجهته الخاصة.
+- **الفائدة:** نحصل على نتائج Google Dorks **بلا CAPTCHA وبلا مفتاح** لأن SearXNG يوزّع الطلبات ويطبّعها.
+- بديل احتياطي: كشط مباشر لـ DuckDuckGo HTML / Bing / Brave (أقل حظراً من Google).
+
+### 2.4 خلاصة: لماذا هذا معتمد عليه للأبد؟
+- لا نعتمد على مصدر واحد → لكل جانب **3-5 مصادر بديلة** (redundancy).
+- لا نعتمد على مفاتيح قد تنتهي أو تُقيّد.
+- المصادر العامة (CT logs, DNS, Wayback) **دائمة ومستقرة**.
+- عند تعطّل مصدر، الـ fallback chain يغطّي.
 
 ---
 
-<a name="3"></a>
-## 3. المبادئ الحاكمة (Design Principles)
+<a name="s3"></a>
+## 3. المبادئ الحاكمة
 
-1. **Plugin-first (كل شيء إضافة):** كل أداة خارجية وكل سكربت خاص = "موديول" يتبع واجهة موحّدة (interface). النواة لا تعرف تفاصيل الأدوات.
-2. **Schema موحّد:** كل موديول يُخرج بيانات بصيغة داخلية موحّدة (`Entity` + `Relationship`) مهما كانت أداته الأصلية.
-3. **فصل الطبقات (Separation of Concerns):** النواة / الموديولات / التقارير / التثبيت منفصلة تماماً.
-4. **آمن افتراضياً (Passive by default):** يبدأ بالفحص السلبي (Passive) الذي لا يلمس الهدف؛ الفحص النشط (Active) يتطلب `--active` صريح.
-5. **بدون مفاتيح = يعمل جزئياً:** الأدوات التي لا تحتاج API keys تعمل فوراً؛ التي تحتاج تُفعّل عند إضافة المفتاح، ولا تُعطّل بقية النظام.
-6. **قابل للتكرار (Idempotent):** إعادة التشغيل لا تُفسد النتائج؛ نظام cache لتجنّب الاستعلامات المكررة.
-7. **شفاف وقابل للتدقيق (Auditable):** كل استعلام يُسجّل (من، متى، ضد ماذا) لأغراض الامتثال القانوني في الشركة.
-8. **لا يعيد اختراع العجلة:** نستخدم الأدوات الناضجة كما هي، ونكتب سكربتات خاصة فقط لسدّ الفجوات الحقيقية.
+1. **Zero-API-First:** يعمل كاملاً بلا مفاتيح؛ المفاتيح تحسّن فقط.
+2. **Plugin-first:** كل مصدر/أداة = موديول بواجهة موحّدة.
+3. **Redundancy:** كل جانب مغطّى بمصادر متعددة (لا نقطة فشل واحدة).
+4. **Schema موحّد:** Entity + Relationship لكل النتائج.
+5. **Passive-first:** الافتراضي لا يلمس الهدف؛ Active يتطلب `--active`.
+6. **Evidence-based:** كل معلومة لها مصدر + ثقة + طابع زمني (قابل للتدقيق).
+7. **Idempotent + Cached:** إعادة التشغيل آمنة وسريعة.
+8. **Fail-soft:** فشل مصدر لا يوقف الفحص، يُسجّل ويُكمل.
 
 ---
 
-<a name="4"></a>
-## 4. المعمارية العامة (High-Level Architecture)
+<a name="s4"></a>
+## 4. المعمارية الكاملة
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                             CLI / TUI / (Web UI اختياري)               │
-│                          argus scan <target> [flags]                    │
-└───────────────────────────────┬──────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    CLI / TUI / Web Dashboard (اختياري)                      │
+│                        argus scan <target> [flags]                          │
+└───────────────────────────────┬────────────────────────────────────────────┘
                                  │
-┌───────────────────────────────▼──────────────────────────────────────┐
-│                          CORE (النواة / Argus Core)                     │
-│  ┌────────────────┐ ┌──────────────────┐ ┌───────────────────────┐    │
-│  │ Target Detector │ │ Task Planner /   │ │  Module Registry       │    │
-│  │ (كشف النوع)     │ │ Scheduler (DAG)  │ │  (سجل الإضافات)         │    │
-│  └────────────────┘ └──────────────────┘ └───────────────────────┘    │
-│  ┌────────────────┐ ┌──────────────────┐ ┌───────────────────────┐    │
-│  │ Executor        │ │ Normalizer       │ │ Correlation Engine     │    │
-│  │ (تشغيل متوازٍ)  │ │ (تطبيع المخرجات) │ │ (ربط + إزالة تكرار)    │    │
-│  └────────────────┘ └──────────────────┘ └───────────────────────┘    │
-│  ┌────────────────┐ ┌──────────────────┐ ┌───────────────────────┐    │
-│  │ Cache / Store   │ │ Rate Limiter /   │ │ Secrets/Config Manager │    │
-│  │ (SQLite)        │ │ Proxy Manager    │ │ (API keys)             │    │
-│  └────────────────┘ └──────────────────┘ └───────────────────────┘    │
-└──────┬─────────────────────────┬──────────────────────────┬──────────┘
-       │                         │                          │
-┌──────▼───────┐   ┌─────────────▼────────────┐   ┌─────────▼──────────┐
-│ External Tool │   │  Native Modules          │   │  Reporting Engine   │
-│ Adapters      │   │  (سكربتاتنا الخاصة)      │   │  HTML/PDF/JSON/MD   │
-│ (محوّلات)     │   │                          │   │  + Graph (Maltego-  │
-│ theHarvester  │   │  - custom email intel    │   │    like)            │
-│ amass, holehe │   │  - custom phone intel    │   └────────────────────┘
-│ sherlock ...  │   │  - custom domain intel   │
-└───────────────┘   │  - dork engine, etc.     │
-                    └──────────────────────────┘
+┌───────────────────────────────▼────────────────────────────────────────────┐
+│                              ARGUS CORE                                       │
+│  Target Detector · Task Planner (DAG) · Async Executor · Module Registry     │
+│  Normalizer · Correlation Engine · Risk Scorer · SQLite Store · Cache        │
+│  Config/Secrets (optional) · Rate Limiter · Audit Logger                     │
+└───┬──────────────────┬──────────────────────┬───────────────────┬──────────┘
+    │                  │                      │                   │
+┌───▼──────┐  ┌────────▼─────────┐  ┌─────────▼────────┐  ┌───────▼─────────┐
+│ Data     │  │ Smart Scraping   │  │ Native Modules   │  │ Reporting        │
+│ Sources  │  │ Engine           │  │ (الوصفة السرية)  │  │ HTML/PDF/JSON/   │
+│ (public, │  │ Playwright +     │  │                  │  │ MD/CSV/Graph     │
+│ no key)  │  │ SearXNG + Tor    │  │                  │  │                  │
+│ crt.sh   │  │ + rotation       │  │ email_pattern    │  │ Executive        │
+│ wayback  │  │ + fallback chain │  │ dork_engine      │  │ summary +        │
+│ DNS/RDAP │  │                  │  │ github_leaks     │  │ risk + evidence  │
+│ Xposed   │  │                  │  │ darkweb_hunter   │  │ + recommend.     │
+│ Ahmia    │  │                  │  │ correlation      │  │                  │
+└──────────┘  └──────────────────┘  └──────────────────┘  └──────────────────┘
+    │                  │                      │                   │
+┌───▼──────────────────▼──────────────────────▼───────────────────▼──────────┐
+│         External Tools (theHarvester, amass, holehe, sherlock, ...)          │
+│                    تُستدعى عبر Adapters بنفس الواجهة                          │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.1 نموذج البيانات الموحّد (Unified Data Model)
-كل نتيجة من أي موديول تتحول إلى:
-
-- **Entity (كيان):** `{ id, type, value, confidence, source, first_seen, tags, metadata{} }`
-  - أنواع: `domain, subdomain, ip, email, phone, username, person, organization, url, breach, credential, social_profile, file, asn, certificate, geolocation`
-- **Relationship (علاقة):** `{ from_entity, to_entity, type, source, confidence }`
-  - أنواع: `resolves_to, owned_by, member_of, leaked_in, linked_account, hosts, registered_by`
-
-هذا هو ما يمكّن "الربط" (Correlation) وبناء رسم بياني (Graph) شبيه بـ Maltego.
-
-### 4.2 لغة التنفيذ
-- **النواة والسكربتات الخاصة:** **Python 3.11+** (نضج مكتبات OSINT، سهولة، معظم الأدوات بايثون).
-- **الأدوات الخارجية:** تُستدعى كما هي (بايثون/Go/غيره) عبر Adapters.
-- **إدارة الحزم:** `pipx` للأدوات المعزولة + `venv` للنواة + Go binaries للأدوات المكتوبة بـ Go (amass/subfinder).
+### نموذج البيانات الموحّد
+- **Entity:** `{id, type, value, confidence(0-1), sources[], first_seen, last_seen, tags[], risk, metadata{}}`
+- **Relationship:** `{from, to, type, confidence, sources[]}`
+- **Evidence:** `{entity_id, source, url, snapshot, timestamp}` — لكل معلومة دليلها.
+- أنواع الكيانات: `domain, subdomain, ip, port, service, tech, cert, email, phone, username, person, org, url, file, credential, breach, paste, social_profile, onion, asn, geolocation, cloud_asset`
 
 ---
 
-<a name="5"></a>
-## 5. محرك الكشف التلقائي عن نوع الهدف (Target Detection Engine)
+<a name="s5"></a>
+## 5. محرك الكشف التلقائي عن الهدف
 
-الميزة الأهم لتحقيق G3. المنطق تسلسلي بالأولوية:
+| الأولوية | النوع | قاعدة الكشف |
+|---------|-------|-------------|
+| 1 | Email | regex بريد صالح |
+| 2 | Phone | `+`/أرقام دولية → تحقق بـ `phonenumbers` |
+| 3 | IP / CIDR | صيغة IPv4/IPv6/CIDR صالحة |
+| 4 | ASN | `ASxxxxx` |
+| 5 | Domain | نطاق + TLD معروف (قائمة IANA) |
+| 6 | URL | يبدأ بـ http(s):// |
+| 7 | Hash / Crypto | أنماط hash/محافظ معروفة |
+| 8 | Username | نص بلا مسافات لا يطابق ما سبق |
+| 9 | Person/Org | نص فيه مسافات → بحث اسم |
 
-| الترتيب | النوع | قاعدة الكشف (Heuristic) |
-|---------|-------|------------------------|
-| 1 | **Email** | يطابق regex بريد `\S+@\S+\.\S+` |
-| 2 | **Phone** | يبدأ بـ `+` أو أرقام مع رموز دولية؛ يُتحقق عبر `phonenumbers` (Google libphonenumber) |
-| 3 | **IPv4/IPv6** | يطابق صيغة IP صالحة |
-| 4 | **CIDR / ASN** | `1.2.3.0/24` أو `ASxxxx` |
-| 5 | **Domain** | يطابق صيغة نطاق صالح + له TLD معروف (قائمة IANA) |
-| 6 | **URL** | يبدأ بـ `http(s)://` |
-| 7 | **Username** | إذا لم يطابق ما سبق ولا يحتوي مسافات/رموز غير مسموحة |
-| 8 | **Person / Org name** | يحتوي مسافة أو أكثر → يُعامل كاسم للبحث |
-| 9 | **Hash / BTC / crypto** | أنماط hash معروفة أو عناوين محافظ |
-
-- **حالات الغموض:** إن تطابق أكثر من نوع، يُعرض للمستخدم اختيار أو يُشغّل الأنواع المحتملة (`--type` للتجاوز اليدوي).
-- **مدخلات متعددة:** ملف يحوي قائمة أهداف (`argus scan -f targets.txt`) → يكتشف كل سطر.
-- **قابل للتوسّع:** كاشفات جديدة تُضاف كـ plugins.
+- تجاوز يدوي: `--type domain`. مدخلات متعددة: `-f targets.txt`. غموض → يشغّل الأنواع المحتملة أو يسأل.
 
 ---
 
-<a name="6"></a>
-## 6. كتالوج الأدوات الخارجية الكامل
+<a name="s6"></a>
+## 6. التغطية الكاملة — مصفوفة الجوانب (Coverage Matrix)
 
-> مصنّفة حسب نوع الهدف. **P** = سلبي (Passive)، **A** = نشط (Active)، **K** = يحتاج API key.
-> هذه القائمة "للأبد" — قابلة للزيادة. كلها مفتوحة المصدر ومجانية إلا ما يُذكر.
+> ضمان **G1**: لا جانب واحد مكشوف. كل خلية لها مصدر (أداة أو سكربت خاص).
 
-### 6.1 أدوات النطاقات / البنية التحتية (Domain / Infrastructure)
-| الأداة | اللغة | الوصف | نوع |
-|--------|-------|-------|-----|
-| **theHarvester** | Python | جمع إيميلات/نطاقات فرعية/مضيفين من محركات بحث ومصادر عامة | P/K |
-| **OWASP Amass** | Go | تعداد نطاقات فرعية شامل (Passive+Active) + خرائط ASN/CIDR | P/A/K |
-| **subfinder** | Go | تعداد نطاقات فرعية سلبي سريع (ProjectDiscovery) | P/K |
-| **assetfinder** | Go | إيجاد أصول/نطاقات مرتبطة بدومين | P |
-| **findomain** | Rust | تعداد نطاقات فرعية سريع | P |
-| **dnsx** | Go | استعلامات DNS جماعية سريعة | A |
-| **dnsrecon** | Python | فحص DNS، zone transfer، brute force | P/A |
-| **massdns** | C | حل DNS جماعي عالي السرعة | A |
-| **crt.sh (API)** | — | شفافية الشهادات (Certificate Transparency) | P |
-| **whois / python-whois** | Python | معلومات تسجيل النطاق | P |
-| **httpx** | Go | فحص خدمات HTTP الحية، عناوين، تقنيات | A |
-| **naabu** | Go | فحص منافذ سريع | A |
-| **nmap** | C | فحص منافذ/خدمات تفصيلي | A |
-| **Shodan (API)** | Python | محرك بحث الأجهزة المتصلة | P/K |
-| **Censys (API)** | Python | فحص الأصول والشهادات على الإنترنت | P/K |
-| **WhatWeb** | Ruby | بصمة تقنيات المواقع | A |
-| **Wappalyzer (CLI)** | JS | كشف تقنيات الموقع | A |
-| **wafw00f** | Python | كشف جدار حماية التطبيقات (WAF) | A |
-| **waybackurls / gau** | Go | استخراج روابط تاريخية من Wayback/CommonCrawl | P |
-| **openSquat** | Python | كشف النطاقات المزيّفة (typosquatting) للعلامة | P |
+### 6.1 عند فحص دومين شركة (company.com) — نجمع كل هذا:
+| الجانب | كيف نغطّيه |
+|--------|-----------|
+| معلومات التسجيل (WHOIS/RDAP) | RDAP + whois — المالك، التواريخ، nameservers |
+| النطاقات الفرعية (كل شيء) | crt.sh + CT logs + subfinder + amass + assetfinder + wayback + DNS brute (اختياري) |
+| سجلات DNS الكاملة | A/AAAA/MX/NS/TXT/SOA/CNAME/SRV/CAA/DNSSEC |
+| البنية التحتية / IPs / ASN | reverse DNS، ASN mapping، reverse IP (جيران السيرفر) |
+| المنافذ والخدمات | Shodan(بديل مجاني: نتائج عامة) / naabu / nmap (active) |
+| التقنيات المستخدمة | httpx + WhatWeb + Wappalyzer → بصمة + مطابقة CVE |
+| الخوادم الحية والعناوين | httpx (status, title, tech, screenshots) |
+| الشهادات (SSL/TLS) | SAN، issuer، تواريخ، اكتشاف نطاقات مخفية |
+| أمن البريد | SPF/DKIM/DMARC/MTA-STS/BIMI ← تقييم النضج |
+| الإيميلات (كل الموظفين) | theHarvester + crawl + PGP + dork + **native_email_pattern** |
+| أسماء وأدوار الموظفين | LinkedIn/dork + metadata المستندات + web crawl |
+| النطاقات المزيّفة (phishing) | **native_typosquat** — توليد وفحص |
+| تسريبات GitHub/GitLab | **native_github_leaks** + gitleaks/trufflehog على العام |
+| الملفات والمستندات العامة | metagoofil + **native_metadata_harvest** (ExifTool) |
+| الأصول السحابية (S3/Azure/GCP) | **native_cloud_assets** |
+| Google/Bing Dorks | **native_dork_engine** (عبر SearXNG) |
+| Wayback/الأرشيف | **native_wayback_intel** — مسارات وملفات ونقاط دخول |
+| Dark Web mentions | **native_darkweb_hunter** (Ahmia + onion index) |
+| تسريبات بيانات الموظفين | XposedOrNot + ProxyNova + holehe + h8mail(بلا مفتاح جزئياً) |
+| سمعة/تهديدات | OTX/ThreatCrowd العام |
 
-### 6.2 أدوات البريد الإلكتروني (Email)
-| الأداة | اللغة | الوصف | نوع |
-|--------|-------|-------|-----|
-| **holehe** | Python | يكشف أي مواقع/خدمات مسجّل فيها الإيميل | P |
-| **h8mail** | Python | البحث عن الإيميل في تسريبات البيانات + كلمات مرور | P/K |
-| **theHarvester** | Python | (مذكور أعلاه) لجمع إيميلات المؤسسة | P/K |
-| **Have I Been Pwned (API)** | — | التحقق من ظهور الإيميل/الرقم في اختراقات | P/K |
-| **DeHashed / LeakCheck (API)** | — | قواعد تسريبات تجارية (اختياري) | P/K |
-| **mosint** | Go | جامع OSINT شامل للإيميل (تسريبات، DNS، مواقع) | P/K |
-| **emailrep (API)** | — | سمعة الإيميل ومخاطره | P/K |
-| **infoga** | Python | جمع معلومات الإيميل من مصادر عامة | P |
-| **email-verify / MX check** | Python | التحقق من صلاحية/تسليم الإيميل (SMTP/MX) | A |
+### 6.2 عند فحص إيميل (ahmed@company.com):
+تسريبات (Xposed/ProxyNova/HIBP-web) · حسابات مسجّلة (holehe) · usernames مشتقة → (sherlock/maigret) · Gravatar · PGP · dork للإيميل · ظهور في pastes · ظهور في dark web · تحليل النطاق.
 
-### 6.3 أدوات أرقام الهواتف (Phone)
-| الأداة | اللغة | الوصف | نوع |
-|--------|-------|-------|-----|
-| **PhoneInfoga** | Go | أشهر أداة: مشغّل الشبكة، الدولة، نوع الخط، بحث محركات | P/K |
-| **ignorant** | Python | يكشف إن كان الرقم مسجّلاً في مواقع (نظير holehe للهاتف) | P |
-| **phonenumbers (libphonenumber)** | Python | تحليل/تحقق/تنسيق دولي + المشغّل والمنطقة | P |
-| **Numverify (API)** | — | تحقق من الرقم والمشغّل والموقع | P/K |
-| **Truecaller (غير رسمي/حذر)** | — | اسم صاحب الرقم (قيود قانونية) | P/K |
-
-### 6.4 أدوات أسماء المستخدمين / الحسابات (Username / Social)
-| الأداة | اللغة | الوصف | نوع |
-|--------|-------|-------|-----|
-| **Sherlock** | Python | البحث عن username عبر مئات المنصات | P |
-| **Maigret** | Python | نسخة موسّعة من Sherlock (3000+ موقع) + استخراج بيانات | P |
-| **WhatsMyName** | data/Python | قاعدة بيانات ضخمة لفحص أسماء المستخدمين | P |
-| **socialscan** | Python | التحقق من توفر/استخدام username وإيميل على المنصات | P |
-| **blackbird** | Python | بحث سريع عن الحسابات بالاسم/username | P |
-
-### 6.5 أدوات شاملة / إطارات (Frameworks & Aggregators)
-| الأداة | اللغة | الوصف | نوع |
-|--------|-------|-------|-----|
-| **SpiderFoot** | Python | أقوى إطار OSINT آلي (200+ موديول) — سنتكامل معه ونستفيد منه | P/A/K |
-| **recon-ng** | Python | إطار استطلاع نمطي بأسلوب Metasploit | P/K |
-| **Maltego (CE)** | Java | تصوّر العلاقات (اختياري، للتصدير) | P/K |
-| **Photon** | Python | زاحف ويب لاستخراج البيانات (إيميلات، روابط، ملفات) | P/A |
-
-### 6.6 أدوات مساندة (Utilities)
-| الأداة | الوصف |
-|--------|-------|
-| **ExifTool** | استخراج بيانات ميتا من الصور/الملفات |
-| **metagoofil** | استخراج ميتاداتا من مستندات المؤسسة العامة |
-| **GHunt** | OSINT لحسابات Google (يحتاج جلسة) |
-| **twint/snscrape** | استخراج من الشبكات الاجتماعية (حسب توفرها) |
-| **google dorks DB** | قاعدة استعلامات Google Dorks جاهزة |
+### 6.3 عند فحص رقم (+966...):
+تحليل كامل (libphonenumber: الدولة، المشغّل، النوع، المنطقة الزمنية) · حسابات مسجّلة (ignorant) · كل الصيغ · dork للرقم · ظهور في تطبيatات المراسلة/الشبكات · ظهور في تسريبات · dark web.
 
 ---
 
-<a name="7"></a>
-## 7. السكربتات الخاصة بنا (Custom / Native Modules)
+<a name="s7"></a>
+## 7. كتالوج الأدوات الخارجية
 
-> هذه هي "قيمتنا المضافة" — تسدّ الفجوات التي لا تغطيها الأدوات الجاهزة. النوع الثاني الذي طلبته.
-> كل سكربت = موديول يتبع نفس واجهة الموديولات ويُخرج بنفس الـ Schema الموحّد.
+> **P**=سلبي، **A**=نشط، **NoKey**=يعمل بلا مفتاح، **Key?**=مفتاح اختياري يحسّن.
 
-### 7.1 موديولات النطاق (Custom Domain Intelligence)
-| الموديول | الفجوة التي يسدّها |
-|----------|-------------------|
-| `native_email_pattern` | استنتاج نمط إيميلات الشركة (first.last@, f.last@) من الإيميلات المكتشفة، ثم توليد إيميلات محتملة لبقية الموظفين المعروفين بالاسم |
-| `native_cert_intel` | تحليل شهادات SSL/TLS (SAN, issuer, تواريخ) لاكتشاف نطاقات/أصول مخفية عبر crt.sh + الاتصال المباشر |
-| `native_dns_history` | تجميع سجل DNS التاريخي (SecurityTrails/passive DNS) وربطه بالبنية الحالية |
-| `native_tech_fingerprint` | دمج نتائج WhatWeb/Wappalyzer/httpx في بصمة تقنية موحّدة + مطابقتها مع CVEs معروفة |
-| `native_cloud_assets` | كشف أصول سحابية (S3 buckets, Azure blobs, GCP) مرتبطة باسم الشركة |
-| `native_github_leaks` | البحث في GitHub/GitLab عن تسريبات أسرار/مفاتيح مرتبطة بالنطاق (بأسلوب gitleaks/trufflehog على النتائج العامة) |
-| `native_typosquat` | توليد وفحص نطاقات مزيّفة محتملة للعلامة التجارية (phishing detection) |
-| `native_email_security` | فحص SPF/DKIM/DMARC/MTA-STS لتقييم نضج أمن البريد للنطاق |
+### 7.1 النطاقات والبنية التحتية
+| الأداة | يعمل بلا مفتاح؟ | الوظيفة |
+|--------|:---:|---------|
+| theHarvester | ✅ NoKey (Key? يوسّع) | إيميلات/نطاقات/مضيفين من 50+ مصدر عام |
+| OWASP Amass | ✅ NoKey | تعداد نطاقات فرعية شامل + ASN/CIDR |
+| subfinder | ✅ NoKey | تعداد سلبي سريع |
+| assetfinder | ✅ NoKey | أصول مرتبطة بالدومين |
+| findomain | ✅ NoKey | تعداد سريع (Rust) |
+| dnsx | ✅ NoKey | استعلامات DNS جماعية |
+| dnsrecon | ✅ NoKey | DNS + zone transfer + brute |
+| massdns | ✅ NoKey | حل DNS جماعي فائق السرعة |
+| httpx | ✅ NoKey | فحص خدمات HTTP حية + تقنيات + screenshots |
+| naabu | ✅ NoKey | فحص منافذ سريع (active) |
+| nmap | ✅ NoKey | فحص منافذ/خدمات تفصيلي (active) |
+| WhatWeb | ✅ NoKey | بصمة تقنيات المواقع |
+| wafw00f | ✅ NoKey | كشف WAF |
+| waybackurls / gau | ✅ NoKey | روD تاريخية من Wayback/CommonCrawl |
+| openSquat | ✅ NoKey | كشف typosquatting للعلامة |
+| Shodan | ⚠️ Key? (بديل مجاني موجود) | محرك بحث الأجهزة |
+| Censys | ⚠️ Key? (CT logs بديل مجاني) | فحص أصول/شهادات |
 
-### 7.2 موديولات البريد (Custom Email Intelligence)
+### 7.2 البريد
+| الأداة | بلا مفتاح؟ | الوظيفة |
+|--------|:---:|---------|
+| holehe | ✅ NoKey | يكشف المواقع المسجّل فيها الإيميل |
+| h8mail | ✅ NoKey (جزئي، Key? يوسّع) | بحث الإيميل في تسريبات |
+| mosint | ✅ NoKey (جزئي) | جامع OSINT شامل للإيميل |
+| theHarvester | ✅ NoKey | جمع إيميلات المؤسسة |
+
+### 7.3 الهاتف
+| الأداة | بلا مفتاح؟ | الوظيفة |
+|--------|:---:|---------|
+| PhoneInfoga | ✅ NoKey | المشغّل، الدولة، النوع + بحث محركات |
+| ignorant | ✅ NoKey | يكشف تسجيل الرقم في مواقع |
+| phonenumbers | ✅ NoKey (offline) | تحليل/تحقق/تنسيق دولي كامل |
+
+### 7.4 أسماء المستخدمين / الحسابات
+| الأداة | بلا مفتاح؟ | الوظيفة |
+|--------|:---:|---------|
+| Sherlock | ✅ NoKey | بحث username عبر 400+ منصة |
+| Maigret | ✅ NoKey | 3000+ موقع + استخراج بيانات |
+| WhatsMyName | ✅ NoKey | قاعدة ضخمة لفحص أسماء المستخدمين |
+| socialscan | ✅ NoKey | توفر/استخدام username وإيميل |
+| blackbird | ✅ NoKey | بحث سريع عن الحسابات |
+
+### 7.5 إطارات وأدوات مساندة
+| الأداة | بلا مفتاح؟ | الوظيفة |
+|--------|:---:|---------|
+| SpiderFoot | ✅ NoKey (Key? يوسّع) | إطار OSINT آلي 200+ موديول |
+| recon-ng | ✅ NoKey (جزئي) | إطار استطلاع نمطي |
+| Photon | ✅ NoKey | زاحف ويب لاستخراج البيانات |
+| ExifTool | ✅ NoKey | ميتاداتا الصور/الملفات |
+| metagoofil | ✅ NoKey | ميتاداتا مستندات المؤسسة العامة |
+| gitleaks / trufflehog | ✅ NoKey | كشف الأسرار في المستودعات العامة |
+| SearXNG (ذاتي الاستضافة) | ✅ NoKey | meta-search 70+ محرك (لا CAPTCHA) |
+
+---
+
+<a name="s8"></a>
+## 8. السكربتات الخاصة — الوصفة السرية (Native Modules)
+
+> النوع الثاني من السكربتات: **تغطي الجوانب التي لا تصل إليها الأدوات الجاهزة**. هذه ميزتنا التنافسية.
+
+### 8.1 موديولات النطاق
+| الموديول | الجانب الذي يغطّيه (الفجوة) |
+|----------|---------------------------|
+| `native_email_pattern` | يستنتج نمط إيميلات الشركة (first.last@ / f.last@ / flast@) من الإيميلات المكتشفة، ثم **يولّد إيميلات كل الموظفين المعروفين بالاسم** حتى لو لم تظهر إيميلاتهم — ويتحقق منها (MX/SMTP) |
+| `native_cert_intel` | يزحف CT logs + يحلّل SAN/issuer لاكتشاف **نطاقات وأصول مخفية** لا تظهرها الأدوات |
+| `native_dns_deep` | يجمع كل أنواع سجلات DNS + DNSSEC + reverse + zone walk + passive DNS تاريخي |
+| `native_tech_cve` | يدمج بصمات التقنيات ويطابقها مع **CVEs معروفة** → تنبيه ثغرات محتملة |
+| `native_cloud_assets` | يكشف **S3 buckets / Azure blobs / GCP** مفتوحة مرتبطة باسم الشركة (bucket enumeration) |
+| `native_github_leaks` | يبحث في **GitHub/GitLab code search** عن أسرار/مفاتيح/إيميلات/مسارات مرتبطة بالنطاق + يشغّل trufflehog على النتائج |
+| `native_typosquat` | يولّد نطاقات مزيّفة (homograph/typo/TLD-swap) ويفحص أيها **مسجّل فعلاً** (كشف phishing) |
+| `native_email_security` | فحص SPF/DKIM/DMARC/MTA-STS/BIMI + تقييم النضج + توصيات |
+| `native_metadata_harvest` | يزحف مستندات الموقع العامة (PDF/DOCX/XLSX) ويستخرج **أسماء موظفين، برامج، مسارات داخلية، أجهزة** من الميتاداتا |
+| `native_wayback_intel` | يستخرج من الأرشيف **مسارات مخفية، endpoints، ملفات نسخ احتياطي، إيميلات** ظهرت تاريخياً |
+
+### 8.2 موديولات البريد
 | الموديول | الفجوة |
 |----------|--------|
-| `native_email_correlate` | ربط إيميل واحد بكل ما اكتُشف عنه (تسريبات + حسابات + username محتمل مشتق من الإيميل) في بطاقة واحدة |
-| `native_username_from_email` | اشتقاق أسماء مستخدمين محتملة من الإيميل وتمريرها لـ Sherlock/Maigret تلقائياً |
-| `native_breach_timeline` | بناء خط زمني للاختراقات التي ظهر فيها الإيميل + تقييم الخطورة (كلمات مرور مكشوفة؟) |
-| `native_gravatar` | فحص Gravatar/صور مرتبطة بالإيميل |
+| `native_email_correlate` | يجمع كل ما اكتُشف عن إيميل واحد (تسريبات + حسابات + usernames + صور + PGP) في **بطاقة موحّدة واحدة** |
+| `native_username_from_email` | يشتق usernames محتملة من الإيميل ويمرّرها تلقائياً لـ Sherlock/Maigret |
+| `native_breach_timeline` | يبني **خط زمني للاختراقات** + هل كُشفت كلمة المرور؟ + شدة الخطورة |
+| `native_email_verify` | تحقق SMTP/MX من صلاحية الإيميل بلا إرسال فعلي (catch-all detection) |
 
-### 7.3 موديولات الهاتف (Custom Phone Intelligence)
+### 8.3 موديولات الهاتف
 | الموديول | الفجوة |
 |----------|--------|
-| `native_phone_enrich` | دمج libphonenumber + المشغّل + المنطقة الزمنية + نوع الخط في بطاقة موحّدة |
-| `native_phone_pivot` | استخدام الرقم كنقطة ارتكاز: بحث في محركات/شبكات اجتماعية/تطبيقات المراسلة عن ظهوره |
-| `native_phone_format_expand` | توليد كل الصيغ الممكنة للرقم (محلي/دولي/بدون رموز) لتغطية بحث أوسع |
+| `native_phone_enrich` | libphonenumber + المشغّل + المنطقة الزمنية + النوع في بطاقة واحدة |
+| `native_phone_pivot` | يستخدم الرقم كنقطة ارتكاز: بحث في المحركات/الشبكات/تطبيقات المراسلة عن ظهوره |
+| `native_phone_format_expand` | يولّد كل الصيغ (محلي/دولي/بلا رموز) لتوسيع البحث |
 
-### 7.4 موديولات عامة (Cross-cutting)
+### 8.4 موديولات عابرة (الأقوى)
 | الموديول | الوصف |
 |----------|-------|
-| `native_dork_engine` | محرك Google/Bing/DuckDuckGo Dorks: يبني ويشغّل استعلامات dork ذكية حسب نوع الهدف (site:, filetype:, intext:) |
-| `native_people_search` | تجميع بحث الأشخاص من مصادر عامة (اسم → إيميل/هاتف/حسابات محتملة) |
-| `native_pastebin_monitor` | البحث في مواقع اللصق (Pastebin وأشباهه) عن ظهور الهدف |
-| `native_darkweb_lite` | فحص خفيف لمصادر مفتوحة تشير لتسريبات dark web (بدون دخول فعلي — روابط/فهارس عامة فقط) |
-| `native_wayback_intel` | استخراج صفحات/مسارات/إيميلات من أرشيف Wayback |
-| `native_metadata_harvest` | تنزيل مستندات عامة للنطاق واستخراج ميتاداتا (أسماء موظفين، برامج، مسارات) |
-| `native_correlation_scorer` | خوارزمية تقييم الثقة والربط بين الكيانات (أي معلومة مؤكدة من مصدرين+؟) |
+| `native_dork_engine` | **محرك Dorks الذكي:** يبني استعلامات Google/Bing/DuckDuckGo (site:, filetype:, intext:, inurl:) حسب نوع الهدف، ينفّذها عبر **SearXNG** (بلا CAPTCHA بلا مفتاح)، ويصنّف النتائج (ملفات حساسة، لوحات دخول، وثائق مسربة) |
+| `native_github_dork` | dorks متخصصة لـ GitHub (اسم الشركة + password/api_key/.env/config) |
+| `native_darkweb_hunter` | يبحث في **Ahmia + فهارس onion عامة** عن ذكر الهدف؛ (اختياري عبر Tor للوصول المباشر) — يجمع **إشارات تسريب** دون تنزيل محتوى غير قانوني |
+| `native_paste_hunter` | يبحث في Pastebin وأشباهه عن ظهور الهدف (إيميلات/كلمات مرور/مفاتيح) |
+| `native_people_search` | اسم شخص → إيميلات/حسابات/أرقام محتملة من مصادر عامة |
+| `native_correlation_scorer` | **قلب الربط:** يوحّد الكيانات المكررة، يقيّم الثقة (معلومة من 3 مصادر > مصدر واحد)، يبني الرسم البياني للعلاقات |
+| `native_scraper_core` | محرك الكشط المشترك (Playwright + rotation + Tor + fallback) الذي تستخدمه بقية الموديولات |
 
-### 7.5 واجهة الموديول الموحّدة (Module Interface)
-كل موديول (خارجي أو خاص) يطبّق:
+### 8.5 واجهة الموديول الموحّدة
 ```python
 class Module:
     name: str
-    target_types: list[str]      # ["domain", "email", ...]
-    requires_keys: list[str]     # ["shodan_api_key", ...] أو []
-    mode: str                    # "passive" | "active"
-    def is_available(self) -> bool: ...     # هل الأداة/المفتاح متوفر؟
-    def run(self, target: Target, ctx: Context) -> list[Entity | Relationship]: ...
+    target_types: list[str]        # ["domain","email","phone","username",...]
+    mode: str                      # "passive" | "active"
+    requires_keys: list[str] = []  # اختياري دائماً
+    fallbacks: list[str] = []      # مصادر بديلة عند الفشل
+    def is_available(self) -> bool: ...
+    async def run(self, target, ctx) -> list[Entity | Relationship]: ...
 ```
-هذا يضمن G6 (التوسّع للأبد بإضافة ملف واحد).
 
 ---
 
-<a name="8"></a>
-## 8. نظام الإدارة والتشغيل (Orchestrator) — النوع الأول من السكربتات
+<a name="s9"></a>
+## 9. محرك Google/GitHub/Dark-Web Dorking (تفصيل تقني)
 
-> هذا هو "العقل المدبّر" الذي طلبته: يشغّل الأدوات، يحلّل الطلب، يرتّب المهام، يجمع النتائج.
+### 9.1 Google/Web Dorking (بلا CAPTCHA بلا مفتاح)
+- **الآلية:** SearXNG محلي → يوزّع الاستعلام على Google/Bing/DDG/Brave/Yandex/Mojeek ويعيد نتائج موحّدة JSON.
+- **مكتبة Dorks:** قاعدة GHDB (Google Hacking Database) محدّثة + dorks مخصّصة نبنيها:
+  - `site:company.com filetype:pdf|xlsx|docx|env|sql|bak|log`
+  - `site:company.com intitle:"index of"` (directory listing)
+  - `site:company.com inurl:admin|login|portal|vpn`
+  - `intext:"@company.com"` (حصاد إيميلات)
+  - `site:pastebin.com "company.com"` / `site:trello.com`, `site:s3.amazonaws.com "company"`
+- **fallback:** كشط مباشر DuckDuckGo HTML / Bing إن تعذّر SearXNG.
 
-### 8.1 مراحل التنفيذ (Pipeline)
-```
-1. Parse Input      → قراءة الهدف/الأهداف والأعلام (flags)
-2. Detect Type      → محرك الكشف (القسم 5)
-3. Plan Tasks       → بناء DAG: أي موديولات تعمل، وترتيبها، وتبعياتها
-                      (مثال: theHarvester يجب أن يسبق native_email_pattern)
-4. Resolve Deps     → التحقق من توفر الأدوات/المفاتيح؛ تخطّي غير المتوفر مع تحذير
-5. Execute          → تشغيل متوازٍ (asyncio + process pool) مع rate limiting
-6. Normalize        → تحويل كل مخرجات لـ Entity/Relationship
-7. Correlate        → ربط، إزالة تكرار، تقييم ثقة (native_correlation_scorer)
-8. Store            → حفظ في SQLite (workspace) + cache
-9. Report           → توليد التقارير (القسم 9)
-```
+### 9.2 GitHub Dorking (تسريبات الأسرار)
+- كشط **GitHub/GitLab code search** للنطاق واسم الشركة مع كلمات: `password, api_key, secret, token, BEGIN RSA, .env, config, aws_access`.
+- تشغيل **trufflehog/gitleaks** على المستودعات العامة المطابقة للتحقق من الأسرار الحية.
+- كشف commits وملفات محذوفة عبر الأرشيف.
 
-### 8.2 مخطّط المهام (Task Planner / DAG)
-- يبني رسم تبعيات موجّه (Directed Acyclic Graph): بعض الموديولات تعتمد على مخرجات غيرها.
-- **مثال حقيقي (فحص دومين شركة):**
-  ```
-  domain
-   ├─(parallel)─ whois, crt.sh, subfinder, amass(passive), theHarvester, shodan
-   │                         │
-   │                    subdomains ──► httpx (فحص الحية) ──► tech fingerprint
-   │
-   ├─ theHarvester → emails ──► holehe + h8mail + native_email_pattern
-   │                                  │
-   │                          native_username_from_email ──► sherlock + maigret
-   │
-   └─ native_email_security (SPF/DKIM/DMARC), native_typosquat, native_github_leaks
-  ```
-
-### 8.3 أوضاع التشغيل (Profiles)
-| البروفايل | الوصف | الاستخدام |
-|-----------|-------|-----------|
-| `quick` | أدوات سلبية سريعة فقط | فحص أولي سريع |
-| `standard` (افتراضي) | كل الأدوات السلبية + الخاصة | الفحص اليومي |
-| `deep` | سلبي + نشط + brute force خفيف | فحص معمّق مصرّح به |
-| `stealth` | سلبي فقط عبر proxies/tor، معدلات منخفضة | فحص حذر |
-| `monitor` | فحص دوري + تنبيه على التغييرات | مراقبة مستمرة |
-| `custom` | المستخدم يختار الموديولات | مرن |
-
-### 8.4 إدارة الموارد
-- **Rate Limiting:** لكل مصدر/API حد معدّل قابل للضبط.
-- **Proxy/Tor Manager:** توجيه الطلبات عبر proxies أو Tor في وضع stealth.
-- **Retry & Backoff:** إعادة محاولة ذكية عند الفشل المؤقت.
-- **Timeout:** لكل موديول مهلة قصوى حتى لا يعلّق النظام.
-- **Cache:** SQLite cache لنتائج الاستعلامات (TTL قابل للضبط) لتوفير الوقت وحصص الـ API.
-
-### 8.5 مساحات العمل (Workspaces)
-- كل هدف/تحقيق = workspace مستقل (مجلد + قاعدة SQLite).
-- يسمح بحفظ الحالة، الاستئناف، والمقارنة الزمنية (diff).
+### 9.3 Dark Web (آمن وقانوني)
+- **Ahmia.fi** (فهرس onion عبر الويب العادي) للبحث عن ذكر النطاق/الشركة/الإيميل.
+- فهارس onion عامة (Tor66, Onion Search) — بحث فقط.
+- **عبر Tor** (اختياري): توجيه استعلامات البحث فقط، **دون تنزيل أو شراء بيانات مسروقة** (خط أحمر قانوني).
+- الهدف: **إشارات تعرّض** (هل بيانات الشركة مذكورة في سوق تسريبات؟) لإطلاق تنبيه — لا اقتناء بيانات.
 
 ---
 
-<a name="9"></a>
-## 9. نظام النتائج والتقارير (Reporting Engine)
+<a name="s10"></a>
+## 10. نظام الإدارة والتشغيل (Orchestrator) — النوع الأول
 
-### 9.1 صيغ الإخراج
-| الصيغة | الاستخدام |
-|--------|-----------|
-| **JSON** | آلي/تكامل مع أنظمة أخرى (SIEM/تذاكر) |
-| **HTML تفاعلي** | تقرير احترافي بألوان، جداول قابلة للفرز، بحث |
-| **PDF** | للإدارة/التوثيق الرسمي |
-| **Markdown** | سريع، للمشاركة والـ git |
-| **CSV** | للتحليل في Excel |
-| **Graph (JSON/GEXF)** | تصوّر العلاقات (استيراد Maltego/Gephi/عرض داخلي) |
+### 10.1 خط الأنابيب (Pipeline)
+```
+Parse → Detect Type → Plan DAG → Resolve Sources → Execute (async, parallel)
+     → Normalize → Correlate + Dedupe + Score → Store (SQLite) → Report
+```
 
-### 9.2 محتوى التقرير
-1. **ملخص تنفيذي:** الهدف، النوع، عدد الكيانات، أبرز المخاطر (Risk Highlights).
-2. **بطاقة الهدف:** كل ما اكتُشف مصنّفاً.
-3. **الكيانات:** جداول (نطاقات فرعية، إيميلات، حسابات، تسريبات...).
-4. **العلاقات:** رسم بياني + قائمة.
-5. **تقييم المخاطر:** تسريبات كلمات مرور؟ أصول مكشوفة؟ منافذ خطرة؟ نطاقات phishing؟
-6. **الأدلة (Evidence):** المصدر لكل معلومة (قابل للتدقيق).
-7. **التوصيات:** خطوات معالجة مقترحة (مفيد لك كموظف أمن).
-8. **سجل الفحص:** الأدوات التي عملت/فشلت/تُخطّيت + التوقيت.
+### 10.2 مخطّط المهام (DAG) — مثال فحص دومين
+```
+company.com
+├─(parallel wave 1)─ RDAP/whois · crt.sh · CT logs · subfinder · amass ·
+│                    assetfinder · theHarvester · wayback · DNS-deep · dork_engine
+│                              │
+│                       subdomains ─► httpx (حية) ─► tech_cve ─► naabu/nmap(active)
+│                              │
+├─(wave 2)─ theHarvester+dork+PGP → emails ─► holehe · xposed · h8mail ·
+│                                             native_email_pattern · breach_timeline
+│                                                    │
+│                                    username_from_email ─► sherlock · maigret
+│
+├─(wave 3)─ native_email_security · native_typosquat · native_github_leaks ·
+│           native_cloud_assets · native_metadata_harvest · darkweb_hunter
+│
+└─(final)── correlation_scorer ─► risk_scorer ─► report
+```
 
-### 9.3 نظام تقييم المخاطر (Risk Scoring)
-- كل اكتشاف يُصنّف: `Critical / High / Medium / Low / Info`.
-- أمثلة: كلمة مرور مكشوفة في تسريب = Critical؛ نطاق فرعي منسي حيّ = Medium؛ SPF مفقود = Medium.
+### 10.3 البروفايلات
+| البروفايل | الوصف |
+|-----------|-------|
+| `quick` | مصادر سلبية سريعة فقط (دقائق) |
+| `standard` (افتراضي) | كل السلبي + كل السكربتات الخاصة |
+| `deep` | + active (naabu/nmap/brute DNS) + كشط موسّع |
+| `stealth` | سلبي فقط عبر Tor + معدلات منخفضة |
+| `monitor` | فحص دوري + diff + تنبيه على الجديد |
+
+### 10.4 إدارة الموارد
+Rate limiting لكل مصدر · Proxy/Tor manager · Retry+backoff · Timeout لكل موديول · SQLite cache (TTL) · Workspaces مستقلة لكل هدف (حفظ/استئناف/مقارنة).
 
 ---
 
-<a name="10"></a>
-## 10. نظام التثبيت والتجهيز التلقائي (Installer) — تحقيق G4
+<a name="s11"></a>
+## 11. نظام التقارير الاحترافي
 
-### 10.1 السيناريو المطلوب
+### 11.1 الصيغ
+HTML تفاعلي (بحث/فرز/رسم بياني) · PDF رسمي · JSON للتكامل · Markdown · CSV · Graph (GEXF/JSON لـ Gephi/Maltego).
+
+### 11.2 محتوى التقرير
+1. **ملخص تنفيذي:** الهدف، عدد الكيانات، أبرز المخاطر (Critical/High).
+2. **بطاقة الهدف** مصنّفة بالكامل.
+3. **جداول الكيانات:** نطاقات فرعية، إيميلات، حسابات، تسريبات، منافذ، تقنيات...
+4. **الرسم البياني للعلاقات** (من مرتبط بمن).
+5. **تقييم المخاطر:** Critical/High/Medium/Low/Info لكل اكتشاف.
+6. **الأدلة (Evidence):** المصدر + الرابط + الطابع الزمني لكل معلومة.
+7. **التوصيات:** خطوات معالجة (مفيد لك كموظف أمن).
+8. **سجل الفحص:** ما عمل/فشل/تُخطّي + التوقيت.
+
+### 11.3 أمثلة تصنيف المخاطر
+| الاكتشاف | التصنيف |
+|----------|---------|
+| كلمة مرور موظف مكشوفة في تسريب | 🔴 Critical |
+| مفتاح API في GitHub عام | 🔴 Critical |
+| S3 bucket مفتوح | 🔴 Critical |
+| نطاق فرعي منسي حيّ (staging/dev) | 🟠 High |
+| نطاق phishing مسجّل مشابه | 🟠 High |
+| SPF/DMARC مفقود | 🟡 Medium |
+| إيميل موظف مكشوف (بلا كلمة مرور) | 🟡 Medium |
+| تقنية قديمة بإصدار معلن | 🔵 Low |
+
+---
+
+<a name="s12"></a>
+## 12. المُثبّت التلقائي + Docker
+
+### 12.1 السيناريو
 ```bash
 git clone https://github.com/mohammedaljohaniit1-max/OSINT-2026.git
 cd OSINT-2026
-./install.sh          # (أو install.ps1 على ويندوز)
-# ... يثبّت ويتحقق من كل شيء ...
-argus scan example.com
+./install.sh            # ينزّل ويجهّز كل شيء ويتحقق
+argus doctor            # تقرير جاهزية كل الأدوات
+argus scan company.com  # ابدأ
 ```
 
-### 10.2 ما يفعله المُثبّت
-1. **كشف نظام التشغيل** (Linux/Mac/Windows) والتوزيعة ومدير الحزم.
-2. **التحقق من المتطلبات:** Python 3.11+, Go, Git, pip/pipx (يثبّت الناقص إن أمكن).
-3. **إنشاء بيئة معزولة** (venv) للنواة.
-4. **تثبيت أدوات بايثون** عبر pipx (عزل كل أداة) — theHarvester, holehe, sherlock, maigret, h8mail, ignorant, phoneinfoga(py)...
-5. **تنزيل ثنائيات Go** — amass, subfinder, httpx, dnsx, naabu, assetfinder (عبر `go install` أو تنزيل releases مباشرة).
-6. **تنزيل قواعد البيانات** — WhatsMyName, dorks DB, wordlists أساسية.
-7. **إعداد ملف الإعدادات** `config.yaml` + قالب `secrets.env` لمفاتيح الـ API.
-8. **فحص صحة (Health Check):** يشغّل `argus doctor` — يتحقق أن كل أداة تعمل ويطبع تقرير الجاهزية:
+### 12.2 ما يفعله install.sh
+1. كشف النظام (Linux/Mac/Win-WSL) ومدير الحزم.
+2. تثبيت المتطلبات: Python 3.11+، Go، Tor، Git، pipx، Playwright + متصفح.
+3. venv للنواة + pipx لعزل كل أداة بايثون.
+4. تنزيل ثنائيات Go (amass/subfinder/httpx/dnsx/naabu/assetfinder).
+5. تنزيل قواعد: GHDB dorks، WhatsMyName، TLDs، wordlists.
+6. تشغيل حاوية **SearXNG** المحلية (Docker) للبحث بلا CAPTCHA.
+7. تجهيز `config.yaml` + `secrets.env` (فارغ — كله اختياري).
+8. `argus doctor`: تقرير جاهزية:
    ```
-   [✓] theHarvester   ready
-   [✓] amass          ready
-   [✗] shodan         missing API key (optional)
-   [!] nmap           not installed (active scans disabled)
+   [✓] theHarvester    ready
+   [✓] amass           ready
+   [✓] SearXNG         running (localhost:8080)
+   [✓] Tor             running
+   [✓] Playwright      chromium installed
+   [-] shodan          no key (optional — using free fallback)
    ```
-9. **دعم Docker (بديل):** `docker compose up` — صورة جاهزة فيها كل الأدوات (يحل مشكلة اختلاف الأنظمة نهائياً — خيار قوي لك).
 
-### 10.3 استراتيجية دعم الأنظمة
-- **Linux:** دعم كامل أصلي (أولويتك — شغلك عليه).
-- **macOS:** دعم عبر Homebrew (معظم الأدوات متوفرة).
-- **Windows:** دعم عبر WSL2 موصى به + PowerShell installer للأدوات المتوافقة.
-- **الحل الشامل المضمون:** **Docker image** — يعمل على الثلاثة بلا اختلاف. (خطة بديلة قوية لتحقيق G5).
+### 12.3 دعم الأنظمة
+- **Linux:** دعم كامل أصلي (أولويتك).
+- **macOS:** Homebrew.
+- **Windows:** WSL2 (موصى) + install.ps1.
+- **الحل المضمون للكل:** **Docker image** `docker compose up` — كل الأدوات + SearXNG + Tor جاهزة، يعمل على أي نظام بلا اختلاف.
 
-### 10.4 التحديث
-```bash
-argus update          # يحدّث النواة + كل الأدوات + قواعد البيانات
-```
+### 12.4 التحديث
+`argus update` — النواة + الأدوات + قواعد Dorks + قوائم المصادر.
 
 ---
 
-<a name="11"></a>
-## 11. هيكل المجلدات الكامل (Repository Structure)
+<a name="s13"></a>
+## 13. هيكل المجلدات
 
 ```
 OSINT-2026/
-├── README.md                     # نظرة عامة + دليل البدء السريع
-├── MASTER_PLAN.md                # هذه الوثيقة
-├── LICENSE                       # رخصة (MIT مقترح)
-├── install.sh                    # مُثبّت Linux/Mac
-├── install.ps1                   # مُثبّت Windows
-├── docker/
-│   ├── Dockerfile
-│   └── docker-compose.yml
-├── config/
-│   ├── config.yaml               # الإعدادات العامة
-│   ├── secrets.env.example       # قالب مفاتيح API
-│   ├── modules.yaml              # تفعيل/تعطيل الموديولات
-│   └── profiles.yaml             # تعريف البروفايلات
-├── argus/                        # النواة (Python package)
-│   ├── __init__.py
-│   ├── cli.py                    # واجهة الأوامر
-│   ├── core/
-│   │   ├── detector.py           # كشف نوع الهدف
-│   │   ├── planner.py            # مخطّط المهام (DAG)
-│   │   ├── executor.py           # التشغيل المتوازي
-│   │   ├── normalizer.py         # التطبيع
-│   │   ├── correlator.py         # الربط وإزالة التكرار
-│   │   ├── registry.py           # سجل الموديولات
-│   │   ├── models.py             # Entity / Relationship / Target
-│   │   ├── store.py              # SQLite + workspaces
-│   │   ├── cache.py
-│   │   ├── config.py             # إدارة الإعدادات والأسرار
-│   │   ├── ratelimit.py
-│   │   └── proxy.py
+├── README.md                 # الدليل الشامل (كل أداة: وظيفة/فائدة/تحميل/تشغيل)
+├── MASTER_PLAN.md            # هذه الوثيقة
+├── LICENSE
+├── install.sh / install.ps1
+├── docker/ (Dockerfile, docker-compose.yml, searxng/)
+├── config/ (config.yaml, secrets.env.example, modules.yaml, profiles.yaml)
+├── argus/
+│   ├── cli.py
+│   ├── core/ (detector, planner, executor, normalizer, correlator,
+│   │          risk_scorer, registry, models, store, cache, ratelimit,
+│   │          proxy, audit)
+│   ├── sources/              # مصادر بلا مفتاح
+│   │   (crtsh, ct_logs, wayback, commoncrawl, rdap, dns, pgp,
+│   │    xposedornot, proxynova, ahmia, hackertarget, otx)
+│   ├── scraping/             # محرك الكشط الذكي
+│   │   (scraper_core, searxng_client, browser, rotation, tor)
 │   ├── modules/
-│   │   ├── base.py               # واجهة Module الأساسية
-│   │   ├── external/             # محوّلات الأدوات الخارجية (Adapters)
-│   │   │   ├── theharvester.py
-│   │   │   ├── amass.py
-│   │   │   ├── subfinder.py
-│   │   │   ├── holehe.py
-│   │   │   ├── h8mail.py
-│   │   │   ├── sherlock.py
-│   │   │   ├── maigret.py
-│   │   │   ├── phoneinfoga.py
-│   │   │   ├── ignorant.py
-│   │   │   ├── shodan_mod.py
-│   │   │   ├── httpx_mod.py
-│   │   │   ├── spiderfoot.py
-│   │   │   └── ...               # (كل أداة من القسم 6)
-│   │   └── native/               # سكربتاتنا الخاصة (القسم 7)
-│   │       ├── email_pattern.py
-│   │       ├── cert_intel.py
-│   │       ├── email_security.py
-│   │       ├── github_leaks.py
-│   │       ├── typosquat.py
-│   │       ├── phone_enrich.py
-│   │       ├── dork_engine.py
-│   │       ├── correlation_scorer.py
-│   │       └── ...
-│   ├── reporting/
-│   │   ├── html.py
-│   │   ├── pdf.py
-│   │   ├── json_out.py
-│   │   ├── markdown.py
-│   │   ├── graph.py
-│   │   └── templates/            # قوالب HTML/Jinja2
-│   └── utils/
-│       ├── logging.py            # سجل التدقيق (audit log)
-│       ├── validators.py
-│       └── net.py
-├── data/
-│   ├── tlds.txt                  # قائمة TLDs للكشف
-│   ├── dorks/                    # قواعد Google Dorks
-│   ├── wordlists/                # قوائم للتعداد
-│   └── whatsmyname.json          # قاعدة أسماء المستخدمين
-├── workspaces/                   # نتائج الفحوصات (per-target)
-├── tests/                        # اختبارات وحدة/تكامل
-│   ├── test_detector.py
-│   ├── test_modules/
-│   └── ...
-├── docs/                         # توثيق مفصّل
-│   ├── ARCHITECTURE.md
-│   ├── ADD_MODULE.md             # كيف تضيف موديول جديد
-│   ├── API_KEYS.md               # كيف تحصل على المفاتيح وتضيفها
-│   └── USAGE.md
-└── scripts/                      # سكربتات صيانة/تحديث
-    ├── update_tools.sh
-    └── healthcheck.sh
+│   │   ├── external/ (theharvester, amass, subfinder, holehe, sherlock,
+│   │   │              maigret, phoneinfoga, ignorant, httpx, ... )
+│   │   └── native/  (email_pattern, cert_intel, dns_deep, tech_cve,
+│   │                 cloud_assets, github_leaks, typosquat, email_security,
+│   │                 metadata_harvest, wayback_intel, email_correlate,
+│   │                 username_from_email, breach_timeline, phone_enrich,
+│   │                 phone_pivot, dork_engine, github_dork, darkweb_hunter,
+│   │                 paste_hunter, people_search, correlation_scorer)
+│   ├── reporting/ (html, pdf, json_out, markdown, csv_out, graph, templates/)
+│   └── utils/ (logging, validators, net)
+├── data/ (tlds.txt, dorks/ghdb.json, wordlists/, whatsmyname.json)
+├── workspaces/               # نتائج كل فحص
+├── tests/
+├── docs/ (ARCHITECTURE, ADD_MODULE, SOURCES, USAGE, LEGAL)
+└── scripts/ (update_tools.sh, healthcheck.sh)
 ```
 
 ---
 
-<a name="12"></a>
-## 12. الأمان والأخلاقيات والقانون (OPSEC & Legal)
+<a name="s14"></a>
+## 14. الأمان والقانون (OPSEC & Legal)
 
-> بما أنك موظف أمن سيبراني تعمل ضمن نطاق مصرّح به، هذا القسم يحميك ويحمي المشروع.
-
-1. **الاستخدام المصرّح فقط:** الأداة مخصّصة لفحص أصول شركتك أو ما لديك تفويض كتابي بفحصه. رسالة تحذير عند أول تشغيل + إقرار (`--i-have-authorization`).
-2. **سجل تدقيق كامل (Audit Log):** كل فحص يُسجّل (الهدف، الوقت، المستخدم، الموديولات) — مهم للامتثال.
-3. **Passive-first:** الافتراضي لا يلمس الهدف؛ الفحص النشط يتطلب علماً صريحاً.
-4. **احترام حصص الـ API وشروط الخدمة (ToS):** rate limiting افتراضي؛ تحذير من الأدوات التي قد تخالف ToS.
-5. **حماية البيانات:** نتائج الفحص قد تحوي بيانات شخصية حسّاسة (تسريبات) → تُخزّن محلياً، تشفير اختياري للـ workspace، لا رفع سحابي.
-6. **إخلاء مسؤولية (Disclaimer)** في README واضح.
-7. **بيانات دنيا (Data Minimization):** جمع ما يلزم فقط للهدف الأمني.
+1. **استخدام مصرّح فقط:** أصول شركتك أو ما لديك تفويض كتابي بفحصه. إقرار عند أول تشغيل.
+2. **سجل تدقيق كامل:** كل فحص (الهدف/الوقت/المستخدم/الموديولات) — للامتثال.
+3. **Passive-first:** الافتراضي لا يلمس الهدف؛ active صريح.
+4. **خط أحمر Dark Web:** بحث عن **إشارات التعرّض** فقط — **ممنوع تنزيل/شراء/حيازة بيانات مسروقة**.
+5. **حماية البيانات:** النتائج (قد تحوي بيانات شخصية) تُخزّن محلياً، تشفير اختياري للـ workspace، لا رفع سحابي.
+6. **احترام ToS + rate limits:** لتفادي الحظر والمخالفات.
+7. **Disclaimer** واضح في README.
 
 ---
 
-<a name="13"></a>
-## 13. خارطة الطريق المرحلية (Roadmap / Phases)
+<a name="s15"></a>
+## 15. خارطة الطريق المرحلية
 
-> بناء تدريجي: كل مرحلة تُنتج شيئاً يعمل ويُختبر قبل الانتقال للتالية.
+### 🟢 المرحلة 0 — الأساس
+هيكل + models + config + audit logging + CLI هيكلي (`argus --help/doctor`).
 
-### 🟢 المرحلة 0 — الأساس (Foundation)
-- [ ] هيكل المستودع + README + LICENSE + config.
-- [ ] نموذج البيانات (`models.py`: Entity/Relationship/Target).
-- [ ] `config.py` + إدارة الأسرار + `secrets.env.example`.
-- [ ] نظام تسجيل (logging) + audit log.
-- [ ] هيكل CLI أساسي (`argus --help`, `argus doctor`).
+### 🟢 المرحلة 1 — النواة + محرك الكشط
+detector · registry · planner · executor(async) · normalizer · store(SQLite) · **scraper_core + searxng_client + tor**.
 
-### 🟢 المرحلة 1 — النواة (Core Engine)
-- [ ] محرك الكشف عن نوع الهدف (`detector.py`) + اختباراته.
-- [ ] واجهة الموديول (`base.py`) + سجل الموديولات (`registry.py`).
-- [ ] المخطّط (`planner.py`) + المنفّذ المتوازي (`executor.py`).
-- [ ] المطبّع (`normalizer.py`) + التخزين (`store.py` SQLite + workspaces).
+### 🟢 المرحلة 2 — تدفّق الدومين كامل (أولويتك)
+مصادر: rdap, crtsh, ct_logs, dns, wayback + أدوات: subfinder, amass, theHarvester, httpx + native: email_pattern, email_security, cert_intel, dork_engine + correlator + تقرير JSON/MD.
+**إنجاز:** `argus scan company.com` end-to-end.
 
-### 🟢 المرحلة 2 — أول تدفّق كامل (First End-to-End: Domain)
-- [ ] محوّلات: whois, crt.sh, subfinder, theHarvester, httpx.
-- [ ] موديول خاص: `email_pattern`, `email_security`.
-- [ ] الربط الأساسي (`correlator.py`).
-- [ ] تقرير JSON + Markdown.
-- [ ] **إنجاز:** `argus scan example.com` يعمل من البداية للنهاية. ✅
+### 🟢 المرحلة 3 — البريد + الهاتف + المستخدم
+holehe, xposed, proxynova, sherlock, maigret, phoneinfoga, ignorant, phonenumbers + native: email_correlate, username_from_email, breach_timeline, phone_enrich, phone_pivot.
+**إنجاز:** الكشف التلقائي لكل الأنواع.
 
-### 🟢 المرحلة 3 — تغطية البريد والهاتف والمستخدم
-- [ ] محوّلات: holehe, h8mail, HIBP, sherlock, maigret, phoneinfoga, ignorant, phonenumbers.
-- [ ] موديولات خاصة: `email_correlate`, `username_from_email`, `phone_enrich`, `phone_pivot`.
-- [ ] **إنجاز:** الكشف التلقائي يعمل لكل الأنواع الأربعة.
+### 🟢 المرحلة 4 — Dorking + GitHub + Dark Web
+dork_engine (SearXNG) · github_leaks + github_dork (trufflehog) · darkweb_hunter (Ahmia/Tor) · paste_hunter.
 
-### 🟢 المرحلة 4 — التقارير الاحترافية
-- [ ] تقرير HTML تفاعلي + PDF + Graph.
-- [ ] نظام تقييم المخاطر (Risk Scoring).
-- [ ] ملخص تنفيذي + توصيات.
+### 🟢 المرحلة 5 — التقارير الاحترافية
+HTML تفاعلي + PDF + Graph + risk_scorer + ملخص تنفيذي + توصيات.
 
-### 🟢 المرحلة 5 — التوسّع (More Coverage)
-- [ ] amass(active), shodan, censys, nmap/naabu, dnsx.
-- [ ] موديولات خاصة: `cert_intel`, `github_leaks`, `typosquat`, `cloud_assets`, `dork_engine`, `metadata_harvest`, `wayback_intel`.
-- [ ] تكامل SpiderFoot + recon-ng.
+### 🟢 المرحلة 6 — التوسّع
+cloud_assets · metadata_harvest · tech_cve · typosquat · SpiderFoot/recon-ng · Shodan/Censys (اختياري).
 
-### 🟢 المرحلة 6 — المُثبّت والتوزيع
-- [ ] `install.sh` كامل + `argus doctor` شامل.
-- [ ] Docker image + docker-compose.
-- [ ] `install.ps1` (Windows) + دليل WSL2.
-- [ ] `argus update`.
+### 🟢 المرحلة 7 — المُثبّت والتوزيع
+install.sh كامل + Docker (مع SearXNG+Tor) + doctor + install.ps1 + update.
 
-### 🟢 المرحلة 7 — المميزات المتقدّمة
-- [ ] بروفايلات (quick/deep/stealth/monitor).
-- [ ] Proxy/Tor manager + cache متقدّم.
-- [ ] وضع المراقبة الدورية + diff بين الفحوصات.
-- [ ] واجهة ويب محلية (Dashboard) — اختياري.
-- [ ] TUI تفاعلي.
+### 🟢 المرحلة 8 — المتقدّم
+بروفايلات · monitor+diff · web dashboard · TUI.
 
-### 🟢 المرحلة 8 — الجودة والتوثيق
-- [ ] تغطية اختبارات شاملة.
-- [ ] توثيق كامل (ARCHITECTURE, ADD_MODULE, API_KEYS, USAGE).
-- [ ] CI/CD (GitHub Actions) للاختبار الآلي.
+### 🟢 المرحلة 9 — الجودة
+اختبارات · توثيق كامل · CI/CD.
 
 ---
 
-<a name="14"></a>
-## 14. معايير النجاح (Definition of Done)
+<a name="s16"></a>
+## 16. معايير النجاح (Definition of Done)
 
-المشروع "مكتمل بحسب الرؤية" عندما:
-1. ✅ `git clone` + `./install.sh` يجهّز كل شيء على Linux بأمر واحد ويمرّ `argus doctor` بنجاح.
-2. ✅ `argus scan <أي هدف>` يكتشف النوع تلقائياً ويشغّل الموديولات المناسبة.
-3. ✅ كل نوع هدف (domain/email/phone/username) مغطّى بأدوات + سكربتات خاصة تسدّ الفجوات.
-4. ✅ التشغيل متوازٍ ويختصر الوقت فعلياً مقابل التشغيل اليدوي.
-5. ✅ تقرير موحّد احترافي (HTML/PDF/JSON) مع تقييم مخاطر وتوصيات.
-6. ✅ إضافة أداة/سكربت جديد = ملف plugin واحد بدون لمس النواة.
-7. ✅ Docker image يعمل على أي نظام (خطة بديلة مضمونة).
-8. ✅ سجل تدقيق + تحذيرات قانونية للاستخدام المصرّح.
+1. ✅ يعمل **بالكامل بلا أي مفتاح API**.
+2. ✅ `argus scan <هدف>` كشف تلقائي + تشغيل متوازٍ.
+3. ✅ **مصفوفة التغطية (القسم 6) كلها مغطّاة** — لا جانب مكشوف.
+4. ✅ Google/GitHub/Dark-Web dorking يعمل آلياً.
+5. ✅ تقرير احترافي (HTML/PDF/JSON) بمخاطر وأدلة وتوصيات.
+6. ✅ كل معلومة لها مصدر + ثقة (معتمد عليه 100%).
+7. ✅ تثبيت بأمر واحد + Docker يعمل على أي نظام.
+8. ✅ إضافة مصدر/أداة = ملف plugin واحد.
+9. ✅ سجل تدقيق + ضوابط قانونية.
 
 ---
 
-## 📌 قرارات معلّقة تحتاج رأيك قبل البناء
-
-1. **الاسم الكودي:** أقترح **`argus`** كأمر. توافق؟ أم تفضّل اسماً آخر؟
-2. **اللغة:** Python للنواة (موصى به). موافق؟
-3. **أولوية التوزيع:** أبني Docker أولاً (يعمل فوراً على كل نظام) أم `install.sh` أصلي لـ Linux أولاً؟
-4. **مفاتيح API:** هل لديك مفاتيح (Shodan/HIBP/Censys) الآن أم نبدأ بالأدوات المجانية فقط ونضيفها لاحقاً؟
-5. **نطاق المرحلة الأولى:** أبدأ بتدفّق **الدومين** كاملاً (لأنه شغلك الأساسي على موقع الشركة) ثم البريد فالهاتف؟
-
-> بمجرد موافقتك على هذه النقاط، أبدأ **المرحلة 0 + 1** فعلياً.
+> **جاهز للبناء.** عند موافقتك أبدأ المرحلة 0 + 1 فوراً. لا مفاتيح مطلوبة منك.
