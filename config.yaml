@@ -1,0 +1,24 @@
+# Argus configuration — EVERYTHING works with these defaults, NO API keys.
+profile: standard          # quick | standard | deep | stealth | monitor
+concurrency: 12
+timeout: 25
+retries: 2
+rate_limit_per_host: 3.0
+
+# networking
+use_tor: false
+tor_socks: "socks5h://127.0.0.1:9050"
+proxies: []
+searxng_url: "http://127.0.0.1:8888"   # local meta-search for dorking
+
+# behavior
+active_scan: false          # port scan / live probing (deep profile turns on)
+verify_smtp: false          # SMTP RCPT email verification (deep profile)
+max_subdomains_resolve: 5000
+output_dir: "reports"
+
+# OPTIONAL keys — NONE are required. Leave blank for full no-key operation.
+keys:
+  github: ""                # optional: higher GitHub dork rate limit
+  shodan: ""                # optional: enrich favicon pivots
+  hunter: ""                # optional

@@ -1,0 +1,163 @@
+"""
+Resilient HTTP client for Argus.
+
+Features that make no-key scraping actually work in 2026:
+  - User-Agent rotation
+  - Optional Tor (socks5h) and proxy-list rotation
+  - Per-host rate limiting (polite, avoids bans)
+  - Automatic retries with backoff
+  - Async (httpx) with sync fallback (requests)
+  - Transparent JSON / text / bytes helpers
+"""
+from __future__ import annotations
+
+import asyncio
+import random
+import time
+from collections import defaultdict
+from typing import Any, Optional
+
+try:
+    import httpx
+    HAVE_HTTPX = True
+except ImportError:
+    HAVE_HTTPX = False
+
+import requests
+
+
+class RateLimiter:
+    def __init__(self, per_sec: float):
+        self.min_interval = 1.0 / per_sec if per_sec > 0 else 0
+        self._last: dict[str, float] = defaultdict(float)
+        self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+    async def wait(self, host: str):
+        async with self._locks[host]:
+            elapsed = time.time() - self._last[host]
+            if elapsed < self.min_interval:
+                await asyncio.sleep(self.min_interval - elapsed)
+            self._last[host] = time.time()
+
+
+class HttpClient:
+    def __init__(self, config):
+        self.cfg = config
+        self.rl = RateLimiter(config.rate_limit_per_host)
+        self._client: Optional["httpx.AsyncClient"] = None
+
+    def _headers(self, extra: dict | None = None) -> dict:
+        h = {
+            "User-Agent": random.choice(self.cfg.user_agents),
+            "Accept": "text/html,application/json,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        if extra:
+            h.update(extra)
+        return h
+
+    def _proxy(self) -> str | None:
+        if self.cfg.use_tor:
+            return self.cfg.tor_socks
+        if self.cfg.proxies:
+            return random.choice(self.cfg.proxies)
+        return None
+
+    async def _ensure(self):
+        if not HAVE_HTTPX:
+            return
+        if self._client is None:
+            proxy = self._proxy()
+            self._client = httpx.AsyncClient(
+                headers=self._headers(),
+                timeout=self.cfg.timeout,
+                follow_redirects=True,
+                proxy=proxy,
+                verify=False,
+            )
+
+    @staticmethod
+    def _host(url: str) -> str:
+        try:
+            return url.split("/")[2]
+        except IndexError:
+            return url
+
+    async def get(self, url: str, *, params=None, headers=None, expect="text") -> Any:
+        await self.rl.wait(self._host(url))
+        for attempt in range(self.cfg.retries + 1):
+            try:
+                if HAVE_HTTPX:
+                    await self._ensure()
+                    r = await self._client.get(
+                        url, params=params, headers=self._headers(headers)
+                    )
+                else:
+                    r = await asyncio.to_thread(
+                        requests.get, url, params=params,
+                        headers=self._headers(headers),
+                        timeout=self.cfg.timeout, verify=False,
+                        proxies=self._req_proxies(),
+                    )
+                if r.status_code >= 500:
+                    raise IOError(f"server {r.status_code}")
+                return self._decode(r, expect)
+            except Exception:
+                if attempt >= self.cfg.retries:
+                    return None
+                await asyncio.sleep(1.5 * (attempt + 1) + random.random())
+        return None
+
+    async def post(self, url, *, data=None, json=None, headers=None, expect="text"):
+        await self.rl.wait(self._host(url))
+        for attempt in range(self.cfg.retries + 1):
+            try:
+                if HAVE_HTTPX:
+                    await self._ensure()
+                    r = await self._client.post(
+                        url, data=data, json=json, headers=self._headers(headers)
+                    )
+                else:
+                    r = await asyncio.to_thread(
+                        requests.post, url, data=data, json=json,
+                        headers=self._headers(headers),
+                        timeout=self.cfg.timeout, verify=False,
+                        proxies=self._req_proxies(),
+                    )
+                return self._decode(r, expect)
+            except Exception:
+                if attempt >= self.cfg.retries:
+                    return None
+                await asyncio.sleep(1.5 * (attempt + 1))
+        return None
+
+    def _req_proxies(self):
+        p = self._proxy()
+        return {"http": p, "https": p} if p else None
+
+    @staticmethod
+    def _decode(r, expect):
+        try:
+            if expect == "json":
+                return r.json()
+            if expect == "bytes":
+                return r.content
+            if expect == "response":
+                return r
+            return r.text
+        except Exception:
+            return r.text if expect != "bytes" else r.content
+
+    async def close(self):
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+
+# convenience sync wrapper for simple scripts / testing
+def sync_get(url, **kw):
+    from .. .core.config import Config  # noqa
+    import requests as _r
+    return _r.get(url, timeout=20, verify=False,
+                  headers={"User-Agent": random.choice(
+                      __import__("argus.core.config", fromlist=["DEFAULT_UAS"]).DEFAULT_UAS)}, **kw)

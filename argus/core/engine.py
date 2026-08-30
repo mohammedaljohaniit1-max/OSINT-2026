@@ -1,0 +1,182 @@
+"""
+The Orchestrator - Argus's brain.
+
+Pipeline:
+  Parse -> Detect -> seed graph -> Plan (which modules) -> Execute (async
+  waves, respecting accepts/produces so newly-found entities feed the next
+  wave) -> Correlate/Score -> Report.
+
+Cascading is the killer feature: a domain produces subdomains + emails, those
+emails feed the breach & holehe modules, employee names feed permutation +
+social modules, discovered IPs feed ASN/CIDR sweeps... all automatically.
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+from dataclasses import dataclass, field
+
+from .config import Config
+from .detector import detect
+from .models import Entity, EntityType, IntelGraph, Evidence
+from .registry import Registry
+from ..utils.http import HttpClient
+
+
+@dataclass
+class RunContext:
+    config: Config
+    http: HttpClient
+    graph: IntelGraph
+    registry: Registry
+    log: "Logger" = None
+
+
+class Logger:
+    def __init__(self, quiet=False):
+        self.quiet = quiet
+        self.lines: list[str] = []
+
+    def info(self, msg):
+        self.lines.append(msg)
+        if not self.quiet:
+            print(f"  \033[36m[*]\033[0m {msg}")
+
+    def good(self, msg):
+        self.lines.append(msg)
+        if not self.quiet:
+            print(f"  \033[32m[+]\033[0m {msg}")
+
+    def warn(self, msg):
+        self.lines.append(msg)
+        if not self.quiet:
+            print(f"  \033[33m[!]\033[0m {msg}")
+
+
+class Engine:
+    def __init__(self, config: Config, quiet=False):
+        self.cfg = config
+        self.log = Logger(quiet)
+        self.graph = IntelGraph()
+        self.http = HttpClient(config)
+        self.registry = Registry().discover()
+        self.ctx = RunContext(config, self.http, self.graph, self.registry, self.log)
+        # cascade control
+        self.max_waves = 4
+        self._processed: set[str] = set()   # entity ids already fed to modules
+        # scan budgets / throttling so cascades never explode
+        self._total_budget = {"quick": 120, "standard": 420, "deep": 1200,
+                              "stealth": 900, "monitor": 420}.get(config.profile, 420)
+        # how many freshly-discovered entities of each type we bother to expand
+        # (seed + a bounded sample; prevents "run wayback on 900 subdomains")
+        self._expand_cap = {
+            "quick":    {"subdomain": 0,   "ip": 5,   "email": 15, "username": 5,
+                         "person": 8,  "tracker_id": 5, "asn": 2, "cidr": 0},
+            "standard": {"subdomain": 25,  "ip": 25,  "email": 60, "username": 15,
+                         "person": 25, "tracker_id": 15, "asn": 3, "cidr": 2},
+            "deep":     {"subdomain": 150, "ip": 100, "email": 300, "username": 40,
+                         "person": 80, "tracker_id": 40, "asn": 5, "cidr": 10},
+        }.get(config.profile, None)
+        self._expanded_count: dict[str, int] = {}
+
+    def _select_pending(self):
+        """Return [(entity, [module_classes])] to run this wave, applying
+        per-type expansion caps and skipping heavy recursive modules on
+        low-value fan-out entities (e.g. hundreds of subdomains)."""
+        from .models import EntityType
+        out = []
+        # process high-risk / high-confidence entities first
+        candidates = sorted(
+            [e for e in self.graph.entities.values() if e.id not in self._processed],
+            key=lambda e: (-e.risk.score, -e.confidence),
+        )
+        for ent in candidates:
+            tname = ent.type.value
+            # apply expansion cap (None = unlimited)
+            if self._expand_cap is not None:
+                cap = self._expand_cap.get(tname, 10)
+                used = self._expanded_count.get(tname, 0)
+                is_seed = "seed" in ent.tags
+                if not is_seed and used >= cap:
+                    self._processed.add(ent.id)   # mark done, don't expand
+                    continue
+                self._expanded_count[tname] = used + 1
+            mods = self.registry.for_type(
+                ent.type, active_ok=self.cfg.active_scan, tor_ok=self.cfg.use_tor)
+            # on fan-out subdomains, drop the most expensive recursive modules
+            if ent.type == EntityType.SUBDOMAIN and "seed" not in ent.tags:
+                heavy = {"wayback", "commoncrawl", "js_recon", "wayback_diff"}
+                mods = [m for m in mods if m.spec.name not in heavy]
+            if mods:
+                out.append((ent, mods))
+        return out
+
+    async def scan(self, raw_target: str) -> IntelGraph:
+        det = detect(raw_target)
+        self.log.good(f"Target detected: {det.value} -> {det.type.value} "
+                      f"({det.confidence:.0%}, {det.note})")
+        self.graph.run_meta.update({
+            "target": det.value,
+            "target_type": det.type.value,
+            "profile": self.cfg.profile,
+            "started": time.time(),
+        })
+        seed = self.graph.add(det.type, det.normalized, confidence=det.confidence,
+                              tags={"seed"})
+        seed.add_evidence(Evidence(source="detector", snippet=det.note))
+
+        # cascading waves
+        overall_start = time.time()
+        for wave in range(1, self.max_waves + 1):
+            if time.time() - overall_start > self._total_budget:
+                self.log.warn(f"Total scan budget ({self._total_budget}s) reached "
+                              f"— stopping cascade at wave {wave}")
+                break
+            pending = self._select_pending()
+            if not pending:
+                break
+            self.log.info(f"── Wave {wave}: expanding {len(pending)} entit"
+                          f"{'y' if len(pending)==1 else 'ies'} ──")
+            tasks = []
+            for ent, mod_classes in pending:
+                self._processed.add(ent.id)
+                for cls in mod_classes:
+                    inst = cls(self.ctx)
+                    if not inst.available():
+                        continue
+                    tasks.append(self._safe_run(inst, ent))
+            if not tasks:
+                break
+            sem = asyncio.Semaphore(self.cfg.concurrency)
+
+            async def bounded(coro):
+                async with sem:
+                    return await coro
+            await asyncio.gather(*[bounded(t) for t in tasks])
+
+        await self.http.close()
+        self._finalize()
+        return self.graph
+
+    async def _safe_run(self, inst, ent):
+        name = inst.spec.name
+        # per-module hard ceiling so one slow source never stalls the whole scan
+        budget = 90 if inst.spec.active else 45
+        try:
+            before = len(self.graph.entities)
+            await asyncio.wait_for(inst.run(ent, self.graph), timeout=budget)
+            gained = len(self.graph.entities) - before
+            if gained > 0:
+                self.log.good(f"{name}: +{gained} entities from {ent.value[:40]}")
+        except asyncio.TimeoutError:
+            self.log.warn(f"{name} timed out ({budget}s) on {ent.value[:30]}")
+        except Exception as e:
+            self.log.warn(f"{name} failed on {ent.value[:30]}: {e}")
+
+    def _finalize(self):
+        from .correlator import correlate
+        correlate(self.graph)
+        self.graph.run_meta["finished"] = time.time()
+        self.graph.run_meta["duration"] = round(
+            self.graph.run_meta["finished"] - self.graph.run_meta["started"], 1
+        )

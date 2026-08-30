@@ -1,0 +1,9 @@
+# Argus core dependencies (all pure-python, no API keys needed)
+httpx[socks]>=0.27
+requests>=2.31
+dnspython>=2.6
+phonenumbers>=8.13
+mmh3>=4.1
+beautifulsoup4>=4.12
+PyYAML>=6.0
+rich>=13.7
