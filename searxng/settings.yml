@@ -1,0 +1,17 @@
+# Minimal SearXNG settings for Argus dorking (enables JSON API).
+use_default_settings: true
+server:
+  bind_address: "0.0.0.0"
+  secret_key: "argus-change-me-in-production"
+  limiter: false
+search:
+  formats:
+    - html
+    - json          # REQUIRED so Argus can query the API
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: duckduckgo
+    disabled: false
