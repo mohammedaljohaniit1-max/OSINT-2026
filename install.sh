@@ -10,6 +10,7 @@
 #     ./install.sh --minimal       # python core only (no external tools)
 #     ./install.sh --update        # update tools/templates
 #     ./install.sh --with-searxng  # also start local SearXNG (needs docker)
+#     ./install.sh --uninstall     # remove venv, reports, SearXNG container, entry point
 # =============================================================================
 set -uo pipefail
 
@@ -20,17 +21,51 @@ warn(){ echo -e "  ${YLW}[!]${RST} $*"; }
 err(){ echo -e "  ${RED}[✗]${RST} $*"; }
 step(){ echo -e "\n${BLD}${CYN}══▶ $*${RST}"; }
 
-MINIMAL=0; UPDATE=0; WITH_SEARXNG=0
+MINIMAL=0; UPDATE=0; WITH_SEARXNG=0; UNINSTALL=0
 for a in "$@"; do
   case "$a" in
     --minimal) MINIMAL=1 ;;
     --update) UPDATE=1 ;;
     --with-searxng) WITH_SEARXNG=1 ;;
+    --uninstall|--remove) UNINSTALL=1 ;;
   esac
 done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
+
+# --------------------------------------------------------------------------- #
+#  UNINSTALL — clean removal of everything install.sh created
+# --------------------------------------------------------------------------- #
+if [ "$UNINSTALL" -eq 1 ]; then
+  RED='\033[31m'; GRN='\033[32m'; YLW='\033[33m'; CYN='\033[36m'; BLD='\033[1m'; RST='\033[0m'
+  echo -e "${BLD}${CYN}══▶ Uninstalling Argus${RST}"
+  SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+  # 1) stop & remove SearXNG container if present
+  if command -v docker >/dev/null 2>&1; then
+    docker rm -f argus-searxng >/dev/null 2>&1 && echo -e "  ${GRN}[✓]${RST} removed SearXNG container" || true
+  fi
+  # 2) remove the pip entry point / editable install
+  if [ -d ".venv" ]; then
+    # shellcheck disable=SC1091
+    source .venv/bin/activate 2>/dev/null && pip uninstall -y argus >/dev/null 2>&1 || true
+    deactivate 2>/dev/null || true
+  fi
+  pip uninstall -y argus >/dev/null 2>&1 || true
+  $SUDO rm -f /usr/local/bin/argus /usr/bin/argus 2>/dev/null || true
+  # 3) delete the virtual environment
+  rm -rf .venv && echo -e "  ${GRN}[✓]${RST} removed .venv"
+  # 4) delete generated data (reports + local scan DB)
+  rm -rf reports && echo -e "  ${GRN}[✓]${RST} removed reports/ (scan DB + reports)"
+  # 5) python caches
+  find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+  rm -rf *.egg-info argus.egg-info build dist 2>/dev/null || true
+  echo -e "  ${GRN}[✓]${RST} removed build artifacts & caches"
+  echo -e "\n${BLD}${GRN}Argus uninstalled.${RST} The source folder is kept; delete it with:"
+  echo -e "  ${CYN}cd .. && rm -rf \"$(basename "$ROOT")\"${RST}"
+  echo -e "  (External OSINT tools like subfinder/holehe were left installed — they're reusable.)"
+  exit 0
+fi
 
 cat <<'BANNER'
     ___                           
@@ -160,5 +195,7 @@ echo -e "${BLD}${GRN}═══════════════════�
 echo -e "  Activate env:   ${CYN}source .venv/bin/activate${RST}"
 echo -e "  Health check:   ${CYN}argus doctor${RST}   (or: python3 -m argus.cli doctor)"
 echo -e "  First scan:     ${CYN}argus scan example.com${RST}"
-echo -e "  List modules:   ${CYN}argus modules${RST}"
-echo -e "\n  ${YLW}Reminder:${RST} restart your shell or 'source ~/.bashrc' so new PATH tools load."
+  echo -e "  List modules:   ${CYN}argus modules${RST}"
+  echo -e "  Scan history:   ${CYN}argus history${RST}   (management commands)"
+  echo -e "  Uninstall:      ${CYN}./install.sh --uninstall${RST}"
+  echo -e "\n  ${YLW}Reminder:${RST} restart your shell or 'source ~/.bashrc' so new PATH tools load."

@@ -29,18 +29,29 @@ class XposedOrNot(Module):
         data = await self.ctx.http.get(url, expect="json")
         if not isinstance(data, dict):
             return
-        breaches = (data.get("breaches") or [[]])
+        # API returns {"Error":"Not found"} when the email is clean -> report clean
+        if data.get("Error") or "breaches" not in data:
+            target.metadata["breach_check"] = "no breaches found (XposedOrNot)"
+            return
+        breaches = data.get("breaches")
         flat = []
-        for b in breaches:
-            if isinstance(b, list):
-                flat.extend(b)
-            else:
-                flat.append(b)
+        if isinstance(breaches, list):
+            for b in breaches:
+                if isinstance(b, list):
+                    flat.extend(b)
+                elif b:
+                    flat.append(b)
+        # TRUTH GUARD: only emit non-empty, string breach names
+        flat = [str(n).strip() for n in flat if n and str(n).strip()]
+        if not flat:
+            target.metadata["breach_check"] = "no breaches found (XposedOrNot)"
+            return
         for name in flat:
-            b = graph.add(EntityType.BREACH, f"{name} ({email})",
-                          risk=RiskLevel.HIGH, confidence=0.85,
-                          tags={"breach"},
-                          evidence=ev("xposedornot", url, f"{email} in {name}"))
+            graph.add(EntityType.BREACH, f"{name} ({email})",
+                      risk=RiskLevel.HIGH, confidence=0.85,
+                      tags={"breach"},
+                      metadata={"breach_name": name, "email": email},
+                      evidence=ev("xposedornot", url, f"{email} found in {name} breach"))
             target.tags.add("breached")
             target.metadata.setdefault("breaches", []).append(name)
 
@@ -60,16 +71,31 @@ class ProxyNovaCOMB(Module):
         data = await self.ctx.http.get(url, expect="json")
         if not isinstance(data, dict):
             return
-        lines = data.get("lines", [])
+        lines = data.get("lines")
+        if not isinstance(lines, list) or not lines:
+            target.metadata["comb_check"] = "no credentials found (ProxyNova COMB)"
+            return
+        emitted = 0
         for ln in lines:
-            # format usually user:password ; we mask the password
-            if ":" in ln:
-                user, _, pw = ln.partition(":")
-                masked = (pw[:2] + "*" * max(0, len(pw) - 2)) if pw else ""
-                graph.add(EntityType.CREDENTIAL, f"{user}:{masked}",
-                          risk=RiskLevel.CRITICAL, confidence=0.8,
-                          tags={"leaked-cred", "password-reuse-risk"},
-                          metadata={"password_masked": masked, "source_line": True},
-                          evidence=ev("proxynova_comb", url,
-                                      "credential in COMB compilation"))
-                target.tags.add("credential-exposed")
+            if not isinstance(ln, str) or ":" not in ln:
+                continue
+            user, _, pw = ln.partition(":")
+            user, pw = user.strip(), pw.strip()
+            # TRUTH GUARD: the returned line must actually contain the target
+            # (COMB fuzzy-matches; reject unrelated rows)
+            if q.lower() not in user.lower() and q.lower() not in ln.lower():
+                continue
+            if not user:
+                continue
+            masked = (pw[:2] + "*" * max(0, len(pw) - 2)) if pw else "(no password)"
+            emitted += 1
+            graph.add(EntityType.CREDENTIAL, f"{user}:{masked}",
+                      risk=RiskLevel.CRITICAL, confidence=0.8,
+                      tags={"leaked-cred", "password-reuse-risk"},
+                      metadata={"user": user, "password_masked": masked,
+                                "password_length": len(pw)},
+                      evidence=ev("proxynova_comb", url,
+                                  f"{user} appears in COMB leak compilation"))
+            target.tags.add("credential-exposed")
+        if not emitted:
+            target.metadata["comb_check"] = "no matching credentials (ProxyNova COMB)"

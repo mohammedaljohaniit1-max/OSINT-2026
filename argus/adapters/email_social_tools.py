@@ -58,15 +58,39 @@ class Holehe(Module):
     )
 
     async def run(self, target, graph: IntelGraph):
-        code, out, _ = await run_cmd(["holehe", "--only-used", target.value],
-                                     timeout=200)
+        # structured CSV output is far more reliable than parsing the pretty table
+        import csv
+        import io
+        import os
+        import tempfile
+        tmpdir = tempfile.mkdtemp()
+        code, out, err = await run_cmd(
+            ["holehe", "--only-used", "-C", target.value], timeout=200)
+        parsed = False
+        # holehe -C writes <email>.csv in the CWD of the process; but since we
+        # can't easily set cwd here, fall back to robust stdout parsing.
         for line in out.splitlines():
             line = line.strip()
-            if line.startswith("[+]"):
-                site = line[3:].strip()
-                graph.add(EntityType.SOCIAL_PROFILE, f"{site} ({target.value})",
-                          confidence=0.8, tags={"email-registered", site.lower()},
-                          evidence=ev("holehe", snippet=f"{target.value} @ {site}"))
+            if not line.startswith("[+]"):
+                continue
+            site = line[3:].strip()
+            # REJECT holehe's legend/header line and any non-domain token
+            if "email used" in site.lower() or "rate limit" in site.lower():
+                continue
+            if not self._looks_like_site(site):
+                continue
+            parsed = True
+            graph.add(EntityType.SOCIAL_PROFILE, f"{target.value} @ {site}",
+                      confidence=0.85, tags={"email-registered", site.lower()},
+                      metadata={"platform": site, "email": target.value,
+                                "method": "holehe"},
+                      evidence=ev("holehe", snippet=f"{target.value} registered on {site}"))
+
+    @staticmethod
+    def _looks_like_site(s: str) -> bool:
+        # must look like a domain/service token, e.g. "github.com", "twitter.com"
+        import re
+        return bool(re.match(r"^[a-z0-9][a-z0-9.\-]{1,40}\.[a-z]{2,}$", s.lower()))
 
 
 class Sherlock(Module):

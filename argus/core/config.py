@@ -27,10 +27,11 @@ DEFAULT_UAS = [
 @dataclass
 class Config:
     # profiles: quick | standard | deep | stealth | monitor
-    profile: str = "standard"
-    concurrency: int = 12
+    # DEEP is the default: maximum PASSIVE depth (never intrusive unless --active).
+    profile: str = "deep"
+    concurrency: int = 16
     timeout: int = 25
-    retries: int = 2
+    retries: int = 3
     rate_limit_per_host: float = 3.0        # req/sec per host
 
     # networking
@@ -66,8 +67,8 @@ class Config:
         ]:
             if os.environ.get(env):
                 cfg.keys[key] = os.environ[env]
-        if profile:
-            cfg.apply_profile(profile)
+        # always materialize the profile's settings (default = deep)
+        cfg.apply_profile(profile or cfg.profile)
         return cfg
 
     def apply_profile(self, profile: str):
@@ -76,11 +77,18 @@ class Config:
             self.concurrency = 20
             self.max_subdomains_resolve = 500
             self.active_scan = False
+        elif profile == "standard":
+            self.concurrency = 14
+            self.active_scan = False
+            self.max_subdomains_resolve = 5000
         elif profile == "deep":
+            # DEFAULT: maximum PASSIVE depth. Active probing stays OFF unless the
+            # user explicitly passes --active (keeps the scan non-intrusive).
             self.concurrency = 16
-            self.active_scan = True
-            self.verify_smtp = True
-            self.max_subdomains_resolve = 20000
+            self.active_scan = False
+            self.verify_smtp = False
+            self.max_subdomains_resolve = 30000
+            self.retries = 3
         elif profile == "stealth":
             self.use_tor = True
             self.concurrency = 4
