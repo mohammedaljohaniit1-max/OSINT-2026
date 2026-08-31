@@ -26,6 +26,12 @@ class Ahmia(Module):
         tags={"passive", "darkweb", "nokey"},
     )
 
+    # Ahmia's own infrastructure / index onions — never report these as hits
+    IGNORE_ONIONS = {
+        "juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion",  # ahmia
+        "msydqstlz2kzerdg.onion",  # ahmia legacy
+    }
+
     async def run(self, target, graph: IntelGraph):
         import urllib.parse
         q = urllib.parse.quote(target.value)
@@ -33,11 +39,34 @@ class Ahmia(Module):
         html = await self.ctx.http.get(url)
         if not html:
             return
-        onions = set(re.findall(r"([a-z2-7]{16,56}\.onion)", html))
-        for o in onions:
-            graph.add(EntityType.ONION, o, risk=RiskLevel.HIGH, confidence=0.6,
+        # Ahmia renders a "no results" page — bail out truthfully instead of
+        # scraping its own template onions.
+        low = html.lower()
+        if ("no results" in low or "did not match" in low
+                or "0 results" in low):
+            return
+        # Parse actual result blocks: each result links to a real onion + snippet.
+        # Ahmia result items live inside <li class="result"> ... <cite>onion</cite>
+        results = re.findall(
+            r'<li class="result".*?</li>', html, re.S | re.I)
+        hits = 0
+        for block in results:
+            onion_m = re.search(r"([a-z2-7]{16}|[a-z2-7]{56})\.onion", block)
+            if not onion_m:
+                continue
+            onion = onion_m.group(0)
+            if onion in self.IGNORE_ONIONS:
+                continue
+            # confirm the TARGET string genuinely appears in this result block
+            snippet = re.sub(r"<[^>]+>", " ", block)
+            if target.value.lower() not in snippet.lower():
+                continue
+            hits += 1
+            graph.add(EntityType.ONION, onion, risk=RiskLevel.HIGH, confidence=0.55,
                       tags={"darkweb", "exposure-signal"},
+                      metadata={"context": snippet.strip()[:200]},
                       evidence=ev("ahmia", url,
-                                  f"'{target.value}' mentioned near {o}"))
-        if onions:
+                                  f"'{target.value}' appears in dark-web result "
+                                  f"linking to {onion}"))
+        if hits:
             target.tags.add("darkweb-mention")

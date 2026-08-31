@@ -61,8 +61,10 @@ class Engine:
         self.http = HttpClient(config)
         self.registry = Registry().discover()
         self.ctx = RunContext(config, self.http, self.graph, self.registry, self.log)
-        # cascade control
-        self.max_waves = 4
+        # cascade control — deeper profiles cascade through more waves so a
+        # domain fully unfolds: domain→subs→emails→breaches→usernames→social→…
+        self.max_waves = {"quick": 2, "standard": 4, "deep": 6,
+                          "stealth": 5, "monitor": 4}.get(config.profile, 4)
         self._processed: set[str] = set()   # entity ids already fed to modules
         # scan budgets / throttling so cascades never explode
         self._total_budget = {"quick": 120, "standard": 420, "deep": 1200,
@@ -161,13 +163,19 @@ class Engine:
     async def _safe_run(self, inst, ent):
         name = inst.spec.name
         # per-module hard ceiling so one slow source never stalls the whole scan
-        budget = 90 if inst.spec.active else 45
+        budget = 120 if inst.spec.active else 60
         try:
-            before = len(self.graph.entities)
+            # accurate accounting even under concurrency: snapshot entity ids,
+            # then count only ids that are new AND cite this module as a source.
+            before_ids = set(self.graph.entities.keys())
             await asyncio.wait_for(inst.run(ent, self.graph), timeout=budget)
-            gained = len(self.graph.entities) - before
-            if gained > 0:
-                self.log.good(f"{name}: +{gained} entities from {ent.value[:40]}")
+            new_from_me = [
+                e for eid, e in self.graph.entities.items()
+                if eid not in before_ids and name in e.sources
+            ]
+            if new_from_me:
+                self.log.good(f"{name}: +{len(new_from_me)} new "
+                              f"from {ent.value[:40]}")
         except asyncio.TimeoutError:
             self.log.warn(f"{name} timed out ({budget}s) on {ent.value[:30]}")
         except Exception as e:

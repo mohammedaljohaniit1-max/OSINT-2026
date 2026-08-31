@@ -181,12 +181,14 @@ class IntelGraph:
         self.entities: dict[str, Entity] = {}
         self.relationships: dict[str, Relationship] = {}
         self.run_meta: dict[str, Any] = {"started": time.time()}
+        self._new_count = 0          # count of genuinely NEW entities (not merges)
 
     def add_entity(self, e: Entity) -> Entity:
         if e.id in self.entities:
-            self.entities[e.id].merge(e)
+            self.entities[e.id].merge(e)   # duplicate -> merged, NOT counted as new
             return self.entities[e.id]
         self.entities[e.id] = e
+        self._new_count += 1
         return e
 
     def add(self, etype, value, **kw) -> Entity:
@@ -242,3 +244,32 @@ class IntelGraph:
             "entities": [e.to_dict() for e in self.entities.values()],
             "relationships": [r.to_dict() for r in self.relationships.values()],
         }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "IntelGraph":
+        """Rebuild a graph from a stored to_dict() payload (mgmt/report reuse)."""
+        g = cls()
+        g.run_meta = d.get("meta", {})
+        for ed in d.get("entities", []):
+            evs = [Evidence(**{k: v for k, v in x.items()})
+                   for x in ed.get("evidence", [])]
+            e = Entity(
+                type=ed["type"], value=ed["value"],
+                confidence=ed.get("confidence", 0.5),
+                risk=ed.get("risk", "info"),
+                sources=set(ed.get("sources", [])),
+                tags=set(ed.get("tags", [])),
+                metadata=ed.get("metadata", {}),
+                id=ed.get("id", ""),
+            )
+            e.evidence = evs
+            g.entities[e.id] = e
+        for rd in d.get("relationships", []):
+            r = Relationship(
+                src_id=rd["src_id"], dst_id=rd["dst_id"],
+                rel_type=rd["rel_type"], confidence=rd.get("confidence", 0.5),
+                sources=set(rd.get("sources", [])),
+                metadata=rd.get("metadata", {}), id=rd.get("id", ""),
+            )
+            g.relationships[r.id] = r
+        return g

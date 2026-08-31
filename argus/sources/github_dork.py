@@ -39,42 +39,73 @@ class GitHubDork(Module):
 
     async def run(self, target, graph: IntelGraph):
         token = self.ctx.config.keys.get("github")
-        term = target.value
-        queries = [
-            f'"{term}" password', f'"{term}" api_key', f'"{term}" secret',
-            f'"{term}" BEGIN PRIVATE KEY', f'"{term}" DB_PASSWORD',
-        ]
-        for q in queries:
-            if token:
-                await self._api_search(q, token, graph)
-            else:
-                await self._scrape_search(q, graph)
+        term = target.value.split(".")[0] if target.type == EntityType.DOMAIN else target.value
 
-    async def _api_search(self, q, token, graph):
+        # 1) With a token: real code-search for leaked secrets (the strong path).
+        if token:
+            for q in [f'"{target.value}" password', f'"{target.value}" api_key',
+                      f'"{target.value}" secret', f'"{target.value}" DB_PASSWORD']:
+                await self._api_code_search(q, token, graph)
+
+        # 2) No token: use the UNAUTHENTICATED REST search API for USERS + REPOS
+        #    (these work without auth, unlike code search). Then scan the repos'
+        #    default-branch README/config raw files for secrets. This is real,
+        #    verifiable data - no HTML scraping guesswork.
+        await self._api_users_repos(term, target, graph)
+
+    async def _api_code_search(self, q, token, graph):
         url = "https://api.github.com/search/code"
         data = await self.ctx.http.get(
             url, params={"q": q, "per_page": 20},
             headers={"Authorization": f"token {token}",
                      "Accept": "application/vnd.github.v3+json"}, expect="json")
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or "items" not in data:
             return
         for item in data.get("items", []):
             html_url = item.get("html_url", "")
+            if not html_url.startswith("http"):
+                continue
             graph.add(EntityType.DORK_HIT, html_url, risk=RiskLevel.MEDIUM,
-                      confidence=0.6, tags={"github"},
+                      confidence=0.7, tags={"github", "code-match"},
+                      metadata={"query": q},
                       evidence=ev("github_dork", html_url, f"code match: {q}"))
 
-    async def _scrape_search(self, q, graph):
-        import urllib.parse
-        url = f"https://github.com/search?q={urllib.parse.quote(q)}&type=code"
-        html = await self.ctx.http.get(url)
-        if not html:
+    async def _api_users_repos(self, term, target, graph):
+        # find org/user matching the term
+        u = await self.ctx.http.get(
+            "https://api.github.com/search/users",
+            params={"q": term, "per_page": 5},
+            headers={"Accept": "application/vnd.github.v3+json"}, expect="json")
+        if not isinstance(u, dict) or not u.get("items"):
             return
-        for m in re.finditer(r'href="(/[^"]+/blob/[^"]+)"', html):
-            link = "https://github.com" + m.group(1)
-            graph.add(EntityType.DORK_HIT, link, risk=RiskLevel.MEDIUM,
-                      confidence=0.5, tags={"github"},
-                      evidence=ev("github_dork", link, f"scrape: {q}"))
+        for user in u["items"][:3]:
+            login = user.get("login")
+            if not login:
+                continue
+            # list their public repos
+            repos = await self.ctx.http.get(
+                f"https://api.github.com/users/{login}/repos",
+                params={"per_page": 20, "sort": "updated"},
+                headers={"Accept": "application/vnd.github.v3+json"}, expect="json")
+            if not isinstance(repos, list):
+                continue
+            for r in repos[:10]:
+                full = r.get("full_name")
+                if not full:
+                    continue
+                graph.add(EntityType.URL, r.get("html_url", ""), confidence=0.4,
+                          tags={"github-repo"},
+                          metadata={"owner": login, "repo": full},
+                          evidence=ev("github_dork", r.get("html_url", ""),
+                                      f"public repo of GitHub user {login}"))
+                # scan raw README + common config files for secrets
+                branch = r.get("default_branch", "main")
+                for fn in ("README.md", ".env", "config.js", "config.py",
+                           "settings.py", "docker-compose.yml"):
+                    raw = f"https://raw.githubusercontent.com/{full}/{branch}/{fn}"
+                    body = await self.ctx.http.get(raw)
+                    if body and len(body) < 500000:
+                        GitHubDork.scan_secrets(body, raw, graph, origin="github_dork")
 
     @staticmethod
     def scan_secrets(text: str, source_url: str, graph: IntelGraph, origin="github"):

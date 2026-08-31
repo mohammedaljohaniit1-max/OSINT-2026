@@ -50,12 +50,21 @@ USERNAME_DORKS = [
     '"{t}" site:reddit.com OR site:twitter.com',
 ]
 
+PHONE_DORKS = [
+    '"{t}"',
+    '"{t}" whatsapp',
+    '"{t}" telegram',
+    '"{t}" site:facebook.com OR site:linkedin.com',
+    '"{t}" contact OR owner OR name',
+]
+
 PACKS = {
     EntityType.DOMAIN: DOMAIN_DORKS,
     EntityType.EMAIL: EMAIL_DORKS,
     EntityType.PERSON: PERSON_DORKS,
     EntityType.ORG: PERSON_DORKS,
     EntityType.USERNAME: USERNAME_DORKS,
+    EntityType.PHONE: PHONE_DORKS,
 }
 
 
@@ -63,33 +72,66 @@ class DorkEngine(Module):
     spec = ModuleSpec(
         name="dork_engine", category="source",
         accepts={EntityType.DOMAIN, EntityType.EMAIL, EntityType.PERSON,
-                 EntityType.ORG, EntityType.USERNAME},
-        produces={EntityType.DORK_HIT, EntityType.URL, EntityType.EMAIL,
-                  EntityType.FILE},
+                 EntityType.ORG, EntityType.USERNAME, EntityType.PHONE},
+        produces={EntityType.DORK_HIT, EntityType.URL, EntityType.EMAIL},
         description="Google/Bing dorking via local SearXNG (no key, no CAPTCHA)",
         priority=40, tags={"passive", "dorking", "nokey"},
     )
 
     async def run(self, target, graph: IntelGraph):
         pack = PACKS.get(target.type, [])
-        for tmpl in pack:
-            dork = tmpl.format(t=target.value)
-            hits = await self._search(dork)
-            for h in hits[:8]:
-                risk = RiskLevel.INFO
-                low = (h.get("url", "") + h.get("title", "")).lower()
-                if any(k in low for k in ("password", ".env", ".sql", "secret",
-                                          "confidential", "index of", "backup")):
-                    risk = RiskLevel.MEDIUM
-                graph.add(EntityType.DORK_HIT, h.get("url", dork)[:200],
-                          risk=risk, confidence=0.55, tags={"dork"},
-                          metadata={"dork": dork, "title": h.get("title", "")},
-                          evidence=ev("dork_engine", h.get("url", ""),
-                                      f"dork: {dork}"))
-                # mine emails from snippets
-                for em in extract_emails(h.get("content", "")):
-                    graph.add(EntityType.EMAIL, em, confidence=0.5,
-                              evidence=ev("dork_engine", h.get("url", ""), "dork snippet"))
+        # for phones, use the parsed search variants if available
+        subjects = [target.value]
+        if target.type == EntityType.PHONE:
+            subjects = target.metadata.get("search_variants", [target.value])[:3]
+
+        emitted_any = False
+        for subj in subjects:
+            for tmpl in pack:
+                dork = tmpl.format(t=subj)
+                hits = await self._search(dork)
+                for h in hits[:6]:
+                    url = (h.get("url") or "").strip()
+                    # TRUTH GUARD: only emit REAL result URLs, never the dork
+                    # template itself, never empty, never a search-engine page.
+                    if not url.startswith("http"):
+                        continue
+                    if self._is_search_engine_url(url):
+                        continue
+                    title = (h.get("title") or "").strip()
+                    content = h.get("content") or ""
+                    low = (url + " " + title + " " + content).lower()
+                    # relevance guard: for quoted-term dorks the subject should
+                    # plausibly relate; keep DORK_HIT but tag sensitivity.
+                    risk = RiskLevel.INFO
+                    if any(k in low for k in ("password", ".env", ".sql", "secret",
+                                              "confidential", "index of", "backup",
+                                              "leak", "dump")):
+                        risk = RiskLevel.MEDIUM
+                    emitted_any = True
+                    graph.add(EntityType.DORK_HIT, url[:250], risk=risk,
+                              confidence=0.5, tags={"dork", "web-result"},
+                              metadata={"dork": dork, "title": title[:120]},
+                              evidence=ev("dork_engine", url,
+                                          f"web result for dork: {dork}"))
+                    for em in extract_emails(content):
+                        if not target.type == EntityType.EMAIL or em != target.value:
+                            graph.add(EntityType.EMAIL, em, confidence=0.45,
+                                      tags={"from-dork"},
+                                      evidence=ev("dork_engine", url,
+                                                  "email in search snippet"))
+        if not emitted_any:
+            # be honest in the report about why nothing came back
+            target.metadata.setdefault("dork_note",
+                "No web results (SearXNG not running -> DuckDuckGo fallback may be "
+                "rate-limited/empty). Start SearXNG with ./install.sh --with-searxng "
+                "for full dorking.")
+
+    @staticmethod
+    def _is_search_engine_url(url: str) -> bool:
+        bad = ("duckduckgo.com", "google.com/search", "bing.com/search",
+               "searx", "/search?", "yandex.com/search")
+        return any(b in url.lower() for b in bad)
 
     async def _search(self, query: str) -> list[dict]:
         # 1) local SearXNG (preferred)

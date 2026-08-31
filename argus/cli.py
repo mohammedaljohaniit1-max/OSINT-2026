@@ -142,6 +142,113 @@ def cmd_update(args):
     print(_c("Run install.sh --update to refresh external tools & wordlists.", "y"))
 
 
+# --------------------------------------------------------------------------- #
+#  MANAGEMENT COMMANDS (سكربتات الإدارة) — manage stored scans, reports, diffs
+# --------------------------------------------------------------------------- #
+def _open_store(args):
+    outdir = getattr(args, "output_dir", None) or "reports"
+    return Store(f"{outdir}/argus.db"), outdir
+
+
+def _fmt_ts(ts):
+    import datetime
+    try:
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(ts)
+
+
+def cmd_history(args):
+    """List past scans stored in the local DB."""
+    store, _ = _open_store(args)
+    scans = store.list_scans(limit=args.limit, target=args.target)
+    if not scans:
+        print(_c("No scans stored yet. Run 'argus scan <target>' first.", "y"))
+        return
+    st = store.stats()
+    print(_c(f"\nScan history — {st['scans']} scans, {st['distinct_targets']} "
+             f"targets, {st['entities']} total entities\n", "c"))
+    print(_c(f"  {'ID':<5} {'WHEN':<20} {'TYPE':<10} {'ENTITIES':<9} TARGET", "b"))
+    print("  " + "─" * 70)
+    for s in scans:
+        print(f"  {s['id']:<5} {_fmt_ts(s['ts']):<20} {s['type']:<10} "
+              f"{s['entities']:<9} {s['target']}")
+    print()
+
+
+def cmd_report(args):
+    """Regenerate reports (JSON/MD/HTML/GEXF) from a stored scan — no re-scan."""
+    from .core.models import IntelGraph
+    store, outdir = _open_store(args)
+    sid = args.scan_id or store.latest_scan_id(args.target)
+    if not sid:
+        print(_c("No matching scan found.", "r"))
+        return
+    d = store.get_scan(sid)
+    if not d:
+        print(_c(f"Scan {sid} not found.", "r"))
+        return
+    graph = IntelGraph.from_dict(d)
+    paths = write_reports(graph, outdir)
+    print(_c(f"[Argus] Reports regenerated for scan #{sid} "
+             f"({d.get('meta', {}).get('target', '?')}):", "g"))
+    for k, v in paths.items():
+        print(f"   {k:9}: {v}")
+
+
+def cmd_export(args):
+    """Export a stored scan's raw JSON to a file (or stdout)."""
+    import json
+    store, _ = _open_store(args)
+    sid = args.scan_id or store.latest_scan_id(args.target)
+    if not sid:
+        print(_c("No matching scan found.", "r"))
+        return
+    d = store.get_scan(sid)
+    if not d:
+        print(_c(f"Scan {sid} not found.", "r"))
+        return
+    payload = json.dumps(d, indent=2, default=str)
+    if args.out:
+        with open(args.out, "w") as f:
+            f.write(payload)
+        print(_c(f"Exported scan #{sid} -> {args.out}", "g"))
+    else:
+        print(payload)
+
+
+def cmd_diff(args):
+    """Diff the two most recent scans of a target (what changed)."""
+    store, _ = _open_store(args)
+    res = store.diff(args.target)
+    if res.get("error"):
+        print(_c(res["error"], "y"))
+        return
+    print(_c(f"\nDiff for {args.target}: scan #{res['old_scan']} → "
+             f"#{res['new_scan']}\n", "c"))
+    print(_c(f"  + {len(res['added'])} NEW findings", "g"))
+    for e in res["added"][:60]:
+        print(f"    {_c('+', 'g')} [{e['etype']}] {e['value'][:70]}")
+    print(_c(f"\n  - {len(res['removed'])} findings GONE", "y"))
+    for e in res["removed"][:60]:
+        print(f"    {_c('-', 'y')} [{e['etype']}] {e['value'][:70]}")
+    print()
+
+
+def cmd_clean(args):
+    """Prune stored scans (keep the N most recent; optionally per-target)."""
+    store, _ = _open_store(args)
+    if args.scan_id:
+        ok = store.delete_scan(args.scan_id)
+        print(_c(f"Deleted scan #{args.scan_id}" if ok
+                 else f"Scan #{args.scan_id} not found.",
+                 "g" if ok else "y"))
+        return
+    n = store.clean(keep=args.keep, target=args.target)
+    print(_c(f"Removed {n} scan(s). Kept {args.keep} most recent"
+             f"{' for ' + args.target if args.target else ''}.", "g"))
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="argus", description="Argus — Zero-API OSINT Engine")
@@ -150,8 +257,9 @@ def build_parser():
 
     s = sub.add_parser("scan", help="scan a target (auto-detected)")
     s.add_argument("target")
-    s.add_argument("-p", "--profile", default="standard",
-                   choices=["quick", "standard", "deep", "stealth", "monitor"])
+    s.add_argument("-p", "--profile", default="deep",
+                   choices=["quick", "standard", "deep", "stealth", "monitor"],
+                   help="scan depth (default: deep = maximum passive depth)")
     s.add_argument("--active", action="store_true", help="enable active probing")
     s.add_argument("--tor", action="store_true", help="route via Tor")
     s.add_argument("--smtp", action="store_true", help="SMTP email verification")
@@ -163,6 +271,39 @@ def build_parser():
     sub.add_parser("doctor", help="health check").set_defaults(func=cmd_doctor)
     sub.add_parser("modules", help="list modules").set_defaults(func=cmd_modules)
     sub.add_parser("update", help="update tools").set_defaults(func=cmd_update)
+
+    # ---------------- management commands (سكربتات الإدارة) ---------------- #
+    h = sub.add_parser("history", help="list stored scans")
+    h.add_argument("-t", "--target", help="filter by target")
+    h.add_argument("-n", "--limit", type=int, default=50)
+    h.add_argument("--output-dir", default="reports")
+    h.set_defaults(func=cmd_history)
+
+    r = sub.add_parser("report", help="regenerate reports from a stored scan")
+    r.add_argument("scan_id", nargs="?", type=int, help="scan id (default: latest)")
+    r.add_argument("-t", "--target", help="use latest scan of this target")
+    r.add_argument("--output-dir", default="reports")
+    r.set_defaults(func=cmd_report)
+
+    x = sub.add_parser("export", help="export a stored scan's raw JSON")
+    x.add_argument("scan_id", nargs="?", type=int, help="scan id (default: latest)")
+    x.add_argument("-t", "--target", help="use latest scan of this target")
+    x.add_argument("-o", "--out", help="output file (default: stdout)")
+    x.add_argument("--output-dir", default="reports")
+    x.set_defaults(func=cmd_export)
+
+    d = sub.add_parser("diff", help="diff two most recent scans of a target")
+    d.add_argument("target")
+    d.add_argument("--output-dir", default="reports")
+    d.set_defaults(func=cmd_diff)
+
+    c = sub.add_parser("clean", help="prune stored scans")
+    c.add_argument("scan_id", nargs="?", type=int, help="delete one scan id")
+    c.add_argument("-t", "--target", help="restrict to a target")
+    c.add_argument("-k", "--keep", type=int, default=5,
+                   help="keep the N most recent (default 5)")
+    c.add_argument("--output-dir", default="reports")
+    c.set_defaults(func=cmd_clean)
     return p
 
 
