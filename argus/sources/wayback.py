@@ -14,12 +14,17 @@ from ..core.models import EntityType, IntelGraph, RiskLevel
 from ..core.module import Module, ModuleSpec
 from ._base import clean_sub, ev, extract_emails
 
+# HIGH-SIGNAL only: real leak/backup/secret file extensions. The old pattern
+# also matched .json/.xml/.log/.conf which flagged thousands of ordinary URLs
+# as "sensitive" (8966 FILE entities on x.com — pure noise that buried signal).
 SENSITIVE_EXT = re.compile(
-    r"\.(sql|bak|old|zip|tar|gz|env|config|conf|log|json|xml|db|sqlite|"
-    r"pem|key|p12|pfx|git|svn|yml|yaml|ini|passwd|htpasswd)(\?|$)", re.I)
+    r"\.(sql|bak|old|backup|zip|tar\.gz|tgz|env|db|sqlite|dump|"
+    r"pem|key|p12|pfx|kdbx|passwd|htpasswd)(\?|$)", re.I)
 SENSITIVE_PATH = re.compile(
-    r"(admin|login|backup|dump|phpinfo|\.git|wp-config|debug|test|api/|"
-    r"internal|staging|dev|secret|token|password|swagger|graphql)", re.I)
+    r"(/\.git/|/\.env|wp-config\.php|/backup|/dump|phpinfo|/\.svn/|"
+    r"/id_rsa|/credentials|/secrets?\.|/\.aws/|/\.ssh/|/config\.php\.bak)", re.I)
+# how many FILE findings to keep per host (dedup + cap to avoid floods)
+MAX_FILES_PER_HOST = 60
 
 
 class Wayback(Module):
@@ -40,11 +45,13 @@ class Wayback(Module):
         if not isinstance(data, list) or len(data) < 2:
             return
         seen_hosts = set()
+        files_kept = 0
+        seen_files = set()
         for row in data[1:]:
             u = row[0] if isinstance(row, list) else row
             if not u:
                 continue
-            # subdomain harvest
+            # subdomain harvest (always — this is the real value of the archive)
             m = re.search(r"https?://([^/]+)/?", u)
             if m:
                 host = clean_sub(m.group(1).split(":")[0])
@@ -52,12 +59,18 @@ class Wayback(Module):
                     seen_hosts.add(host)
                     graph.add(EntityType.SUBDOMAIN, host, confidence=0.6,
                               evidence=ev("wayback", u))
-            # sensitive file/path
-            if SENSITIVE_EXT.search(u) or SENSITIVE_PATH.search(u):
-                risk = RiskLevel.HIGH if SENSITIVE_EXT.search(u) else RiskLevel.MEDIUM
-                graph.add(EntityType.FILE, u, risk=risk, confidence=0.7,
+            # sensitive file/path — HIGH-SIGNAL only, deduped and capped so a
+            # handful of real leaks aren't buried under thousands of URLs.
+            if files_kept < MAX_FILES_PER_HOST and (
+                    SENSITIVE_EXT.search(u) or SENSITIVE_PATH.search(u)):
+                key = u.split("?")[0]
+                if key in seen_files:
+                    continue
+                seen_files.add(key)
+                files_kept += 1
+                graph.add(EntityType.FILE, u, risk=RiskLevel.HIGH, confidence=0.7,
                           tags={"archived", "sensitive"},
-                          evidence=ev("wayback", u, "archived sensitive URL"))
+                          evidence=ev("wayback", u, "archived sensitive file"))
 
 
 class CommonCrawl(Module):

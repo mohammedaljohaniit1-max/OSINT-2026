@@ -26,10 +26,16 @@ class CrtSh(Module):
         dom = target.value
         url = f"https://crt.sh/?q=%25.{dom}&output=json"
         data = await self.ctx.http.get(url, expect="json")
-        if not data:
+        # crt.sh often returns an HTML error page (decoded to str) or a dict when
+        # rate-limited/down — only a list of row dicts is valid.
+        if not isinstance(data, list):
+            target.metadata.setdefault("crtsh_note", "crt.sh returned no JSON list "
+                                       "(rate-limited or down)")
             return
         subs = set()
         for row in data:
+            if not isinstance(row, dict):
+                continue
             for field in ("name_value", "common_name"):
                 for name in str(row.get(field, "")).split("\n"):
                     name = clean_sub(name)

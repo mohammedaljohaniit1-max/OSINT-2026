@@ -109,22 +109,35 @@ class HudsonRock(Module):
 
 
 class LeakIX(Module):
-    """Publicly indexed exposed services / leaks summary for a host/IP."""
+    """Publicly indexed exposed services / leaks summary for a host/IP.
+
+    Only accepts the seed DOMAIN + IPs (NOT every subdomain) — a full-scan of
+    2000+ subdomains against LeakIX just produced 300+ timeouts and no signal.
+    The public endpoint is also frequently key-gated, so we fast-fail cleanly.
+    """
     spec = ModuleSpec(
         name="leakix", category="source",
-        accepts={EntityType.DOMAIN, EntityType.SUBDOMAIN, EntityType.IP},
+        accepts={EntityType.DOMAIN, EntityType.IP},
         produces={EntityType.SERVICE, EntityType.VULNERABILITY, EntityType.PORT},
         description="LeakIX public host summary (exposed services/leaks, no key)",
         priority=35, tags={"passive", "exposure", "nokey"},
     )
 
     async def run(self, target, graph: IntelGraph):
+        import asyncio
         host = target.value
         url = f"https://leakix.net/host/{urllib.parse.quote(host)}"
-        # LeakIX serves JSON when Accept: application/json is set
-        data = await self.ctx.http.get(
-            url, headers={"Accept": "application/json"}, expect="json")
+        # hard 15s cap: LeakIX public JSON is often key-gated/slow; never let it
+        # stall the wave (it timed out 334x in real runs).
+        try:
+            data = await asyncio.wait_for(
+                self.ctx.http.get(url, headers={"Accept": "application/json"},
+                                  expect="json"), timeout=15)
+        except (asyncio.TimeoutError, Exception):
+            target.metadata["leakix_check"] = "leakix unreachable (skipped)"
+            return
         if not isinstance(data, dict):
+            target.metadata["leakix_check"] = "no public LeakIX JSON (key-gated)"
             return
         services = data.get("Services") or data.get("services") or []
         leaks = data.get("Leaks") or data.get("leaks") or []

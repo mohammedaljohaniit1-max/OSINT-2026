@@ -67,8 +67,8 @@ class Engine:
                           "stealth": 5, "monitor": 4}.get(config.profile, 4)
         self._processed: set[str] = set()   # entity ids already fed to modules
         # scan budgets / throttling so cascades never explode
-        self._total_budget = {"quick": 120, "standard": 420, "deep": 1200,
-                              "stealth": 900, "monitor": 420}.get(config.profile, 420)
+        self._total_budget = {"quick": 120, "standard": 420, "deep": 2400,
+                              "stealth": 1200, "monitor": 420}.get(config.profile, 420)
         # how many freshly-discovered entities of each type we bother to expand
         # (seed + a bounded sample; prevents "run wayback on 900 subdomains")
         self._expand_cap = {
@@ -81,10 +81,45 @@ class Engine:
         }.get(config.profile, None)
         self._expanded_count: dict[str, int] = {}
 
+    # entities tagged with any of these are FINDINGS, not scan scope: the
+    # engine must never cascade modules into them (prevents the typosquat /
+    # registrar-contact contamination that produced fake breaches & subdomains).
+    NO_EXPAND_TAGS = {"no-expand", "out-of-scope", "lookalike",
+                      "registrar-contact", "abuse-contact"}
+
+    @staticmethod
+    def _registrable(host: str) -> str:
+        """Best-effort registrable domain (eTLD+1) without external deps.
+        Handles common 2-level public suffixes (co.uk, com.sa, ...)."""
+        host = host.lower().strip(".").lstrip("*.")
+        parts = host.split(".")
+        if len(parts) <= 2:
+            return host
+        two_level = {"co", "com", "net", "org", "gov", "edu", "ac"}
+        if parts[-2] in two_level and len(parts) >= 3:
+            return ".".join(parts[-3:])
+        return ".".join(parts[-2:])
+
+    def _in_scope(self, ent) -> bool:
+        """Is this entity within the seed target's scope (safe to cascade)?"""
+        from .models import EntityType
+        if "seed" in ent.tags:
+            return True
+        if ent.tags & self.NO_EXPAND_TAGS:
+            return False
+        # domain-rooted scope: only expand domains/subdomains that belong to the
+        # seed registrable domain (x.com), never sibling look-alikes (x.vip).
+        root = self.graph.run_meta.get("root_domain")
+        if root and ent.type in (EntityType.DOMAIN, EntityType.SUBDOMAIN):
+            v = ent.value.lower()
+            if not (v == root or v.endswith("." + root)):
+                return False
+        return True
+
     def _select_pending(self):
         """Return [(entity, [module_classes])] to run this wave, applying
-        per-type expansion caps and skipping heavy recursive modules on
-        low-value fan-out entities (e.g. hundreds of subdomains)."""
+        per-type expansion caps, an in-scope guard, and skipping heavy
+        recursive modules on low-value fan-out entities."""
         from .models import EntityType
         out = []
         # process high-risk / high-confidence entities first
@@ -94,6 +129,11 @@ class Engine:
         )
         for ent in candidates:
             tname = ent.type.value
+            # SCOPE GUARD: findings (look-alikes, registrar contacts, out-of-scope
+            # domains) are recorded but never expanded/cascaded.
+            if not self._in_scope(ent):
+                self._processed.add(ent.id)
+                continue
             # apply expansion cap (None = unlimited)
             if self._expand_cap is not None:
                 cap = self._expand_cap.get(tname, 10)
@@ -107,7 +147,8 @@ class Engine:
                 ent.type, active_ok=self.cfg.active_scan, tor_ok=self.cfg.use_tor)
             # on fan-out subdomains, drop the most expensive recursive modules
             if ent.type == EntityType.SUBDOMAIN and "seed" not in ent.tags:
-                heavy = {"wayback", "commoncrawl", "js_recon", "wayback_diff"}
+                heavy = {"wayback", "commoncrawl", "js_recon", "wayback_diff",
+                         "gau", "leakix", "favicon_pivot"}
                 mods = [m for m in mods if m.spec.name not in heavy]
             if mods:
                 out.append((ent, mods))
@@ -123,6 +164,10 @@ class Engine:
             "profile": self.cfg.profile,
             "started": time.time(),
         })
+        # establish the registrable root domain so the scope guard can keep the
+        # cascade on the target and reject sibling look-alikes.
+        if det.type in (EntityType.DOMAIN, EntityType.SUBDOMAIN):
+            self.graph.run_meta["root_domain"] = self._registrable(det.normalized)
         seed = self.graph.add(det.type, det.normalized, confidence=det.confidence,
                               tags={"seed"})
         seed.add_evidence(Evidence(source="detector", snippet=det.note))
