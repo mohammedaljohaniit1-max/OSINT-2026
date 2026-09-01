@@ -123,10 +123,30 @@ class GauUrls(Module):
     )
 
     async def run(self, target, graph: IntelGraph):
+        import re as _re
         code, out, _ = await run_cmd(["gau", "--subs", target.value], timeout=180)
-        count = 0
+        # Dumping every archived URL floods the graph (5000+ noise entities that
+        # bury real findings). Instead: harvest SUBDOMAINS from the URLs and keep
+        # only URLs that carry intel value (params, sensitive paths/extensions).
+        INTERESTING = _re.compile(
+            r"(\?|=|/api/|/admin|/login|/upload|/download|/backup|/config|"
+            r"\.(env|sql|bak|json|xml|yml|yaml|git|log|zip|tar|gz|key|pem))",
+            _re.I)
+        dom = target.value
+        subs_seen, kept = set(), 0
         for line in out.splitlines():
-            if line.startswith("http") and count < 2000:
-                graph.add(EntityType.URL, line.strip(), confidence=0.6,
+            line = line.strip()
+            if not line.startswith("http"):
+                continue
+            m = _re.search(r"https?://([^/:]+)", line)
+            if m:
+                host = m.group(1).lower().lstrip("*.")
+                if host.endswith(dom) and host not in subs_seen:
+                    subs_seen.add(host)
+                    graph.add(EntityType.SUBDOMAIN, host, confidence=0.55,
+                              evidence=ev("gau", snippet="host seen in archived URL"))
+            if kept < 300 and INTERESTING.search(line):
+                graph.add(EntityType.URL, line, confidence=0.55,
+                          tags={"archived", "has-params"},
                           evidence=ev("gau"))
-                count += 1
+                kept += 1

@@ -89,9 +89,16 @@ class Typosquat(Module):
                     return None
             ip = await asyncio.to_thread(q)
             if ip:
+                # IMPORTANT: a look-alike domain is a FINDING about the target,
+                # NOT part of the target's own attack surface. The "no-expand"
+                # tag tells the engine never to cascade subdomain/wayback/gau/
+                # breach modules into it (that produced huge false-positive
+                # contamination, e.g. treating login-x.com as if it were x.com).
                 graph.add(EntityType.DOMAIN, d, risk=RiskLevel.HIGH, confidence=0.7,
-                          tags={"typosquat", "lookalike", "phishing-risk"},
-                          metadata={"resolves_to": ip, "mimics": target.value},
+                          tags={"typosquat", "lookalike", "phishing-risk",
+                                "no-expand", "out-of-scope"},
+                          metadata={"resolves_to": ip, "mimics": target.value,
+                                    "finding_only": True},
                           evidence=ev("typosquat", "",
                                       f"live look-alike of {target.value} -> {ip}"))
 

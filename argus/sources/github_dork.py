@@ -23,9 +23,17 @@ SECRET_REGEXES = {
     "Stripe Live": re.compile(r"sk_live_[0-9a-zA-Z]{24}"),
     "Private Key": re.compile(r"-----BEGIN (RSA|EC|OPENSSH|PGP) PRIVATE KEY-----"),
     "JWT": re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
+    # High-signal only: a key-like assignment to a LONG high-entropy value.
+    # (The old loose pattern flagged any token:"short" in JS as critical.)
     "Generic Secret": re.compile(
-        r"(?i)(api[_\-]?key|secret|token|passwd|password)['\"\s:=]{1,6}['\"][0-9a-zA-Z_\-!@#$%^&*]{12,}['\"]"),
+        r"(?i)(api[_\-]?key|secret[_\-]?key|access[_\-]?token|client[_\-]?secret|"
+        r"aws[_\-]?secret|private[_\-]?key)['\"\s:=]{1,6}['\"][0-9a-zA-Z_\-/+]{24,}['\"]"),
 }
+
+# obvious placeholders / examples that are NOT real leaks
+_SECRET_FALSE_POSITIVES = re.compile(
+    r"(?i)(your[_\-]?|example|placeholder|xxxx|<[^>]+>|changeme|dummy|test|sample|"
+    r"0000000000|1234567890|abcdef|redacted|\*{4,})")
 
 
 class GitHubDork(Module):
@@ -71,10 +79,19 @@ class GitHubDork(Module):
                       evidence=ev("github_dork", html_url, f"code match: {q}"))
 
     async def _api_users_repos(self, term, target, graph):
+        # Only run org-level ownership discovery for a company DOMAIN/ORG. A raw
+        # single-letter/short term (e.g. "x") matches an unrelated GitHub user
+        # and produced false-positive "secrets". Require a plausible org handle.
+        if len(term) < 3:
+            target.metadata["github_note"] = (
+                f"term '{term}' too generic for reliable GitHub org matching")
+            return
+        full_domain = target.value if target.type == EntityType.DOMAIN else None
+
         # find org/user matching the term
         u = await self.ctx.http.get(
             "https://api.github.com/search/users",
-            params={"q": term, "per_page": 5},
+            params={"q": f"{term} in:login", "per_page": 5},
             headers={"Accept": "application/vnd.github.v3+json"}, expect="json")
         if not isinstance(u, dict) or not u.get("items"):
             return
@@ -82,6 +99,23 @@ class GitHubDork(Module):
             login = user.get("login")
             if not login:
                 continue
+            # OWNERSHIP GUARD: the GitHub account must credibly belong to the
+            # target — its login/blog/email should reference the domain. Without
+            # this, we were scanning strangers' repos and mislabeling their
+            # config tokens as the target's leaked secrets.
+            owns = True
+            if full_domain:
+                prof = await self.ctx.http.get(
+                    f"https://api.github.com/users/{login}",
+                    headers={"Accept": "application/vnd.github.v3+json"},
+                    expect="json")
+                root = full_domain.split(".")[0]
+                hay = ""
+                if isinstance(prof, dict):
+                    hay = " ".join(str(prof.get(k, "")) for k in
+                                   ("blog", "email", "name", "company", "login",
+                                    "twitter_username")).lower()
+                owns = (full_domain in hay) or (login.lower() == root)
             # list their public repos
             repos = await self.ctx.http.get(
                 f"https://api.github.com/users/{login}/repos",
@@ -93,12 +127,19 @@ class GitHubDork(Module):
                 full = r.get("full_name")
                 if not full:
                     continue
-                graph.add(EntityType.URL, r.get("html_url", ""), confidence=0.4,
-                          tags={"github-repo"},
-                          metadata={"owner": login, "repo": full},
+                # record the repo (low confidence if ownership unproven)
+                graph.add(EntityType.URL, r.get("html_url", ""),
+                          confidence=0.5 if owns else 0.25,
+                          tags={"github-repo"} | (set() if owns else {"unverified-owner"}),
+                          metadata={"owner": login, "repo": full,
+                                    "owner_verified": owns},
                           evidence=ev("github_dork", r.get("html_url", ""),
-                                      f"public repo of GitHub user {login}"))
-                # scan raw README + common config files for secrets
+                                      f"public repo of GitHub user {login}"
+                                      + ("" if owns else " (ownership UNVERIFIED)")))
+                # ONLY scan for secrets when ownership is credibly established —
+                # otherwise we'd flag strangers' tokens as the target's leaks.
+                if not owns:
+                    continue
                 branch = r.get("default_branch", "main")
                 for fn in ("README.md", ".env", "config.js", "config.py",
                            "settings.py", "docker-compose.yml"):
@@ -113,6 +154,9 @@ class GitHubDork(Module):
         for label, rx in SECRET_REGEXES.items():
             for m in rx.finditer(text or ""):
                 sample = m.group(0)
+                # skip obvious placeholders/examples (not real leaks)
+                if _SECRET_FALSE_POSITIVES.search(sample):
+                    continue
                 masked = sample[:6] + "…" + sample[-4:] if len(sample) > 12 else sample
                 graph.add(EntityType.SECRET, f"{label}: {masked}",
                           risk=RiskLevel.CRITICAL, confidence=0.85,
