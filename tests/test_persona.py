@@ -209,6 +209,106 @@ def test_search_query_building():
        "skips instagram post URLs (/p/)")
 
 
+def test_search_engine_fallback():
+    """When SearXNG is down and DDG is empty (the operator's real situation),
+    discovery must still work via Bing / Mojeek HTML — not silently do nothing."""
+    print("\n== search-engine fallback chain (SearXNG down) ==")
+    BING = ('<li class="b_algo"><h2><a href="https://x.com/firasalharby">'
+            'Firas Alharby</a></h2></li>')
+    MOJEEK = '<a class="ob" href="https://www.tiktok.com/@firasalharby">t</a>'
+    class _EngHttp:
+        def __init__(self, which): self.which = which
+        async def get(self, url, expect="text", params=None, **kw):
+            if "bing.com" in url and self.which == "bing":
+                return f"<html>{BING}</html>"
+            if "mojeek.com" in url and self.which == "mojeek":
+                return f"<html>{MOJEEK}</html>"
+            return ""
+        async def post(self, url, data=None, **kw): return ""   # DDG empty
+        async def close(self): pass
+    class _EngCfg: searxng_url = ""
+    class _EngCtx:
+        def __init__(self, http): self.config = _EngCfg(); self.http = http
+
+    async def _run(which):
+        ph = PersonaHunter(_EngCtx(_EngHttp(which)))
+        ph._run_pm = {"_search_engines_used": []}
+        rows = await ph._web_search('site:x.com "Firas Alharby"')
+        return rows, ph._run_pm["_search_engines_used"]
+
+    rows_b, eng_b = asyncio.run(_run("bing"))
+    ok(any("x.com/firasalharby" in r["url"] for r in rows_b) and "bing" in eng_b,
+       "Bing HTML fallback returns results when SearXNG+DDG are blind")
+    rows_m, eng_m = asyncio.run(_run("mojeek"))
+    ok(any("tiktok.com/@firasalharby" in r["url"] for r in rows_m) and "mojeek" in eng_m,
+       "Mojeek HTML fallback returns results as last resort")
+
+
+def test_existence_gate():
+    """The real-Kali false positives: login-walls and generic Snapchat /add
+    pages returned 200 for EVERY handle and were paraded as 'likely' accounts.
+    The existence gate must discard them and keep only real profile pages."""
+    print("\n== existence gate (kill login-wall / generic-page false positives) ==")
+    from argus.persona.existence import classify
+    # Snapchat generic /add landing (exists for any handle) -> shell
+    snap = _Resp(200, '<html lang="ar"><head>'
+        '<meta property="og:title" content=".... على سناب شات">'
+        '<meta property="og:description" content=".... أصبح متاحًا على سناب شات">'
+        '</head></html>')
+    v, _ = classify("Snapchat", "firasalharbi", extract_profile(snap.text), snap.text)
+    ok(v == "shell", "Snapchat generic /add page -> shell (discarded)")
+    # Instagram login wall (title is just 'Instagram') -> shell
+    ig = '<html lang="en"><head><title>Instagram</title>' \
+         '<meta property="og:title" content="Instagram"></head></html>'
+    v, _ = classify("Instagram", "firasalharbi", extract_profile(ig), ig)
+    ok(v == "shell", "Instagram login-wall -> shell (discarded)")
+    # Threads shell -> shell
+    th = '<html lang="en"><head><title>Threads</title></head></html>'
+    v, _ = classify("Threads", "firasalharbi", extract_profile(th), th)
+    ok(v == "shell", "Threads shell -> shell (discarded)")
+    # explicit not-found -> absent
+    nf = '<html><head><title>Firas</title></head><body>Sorry, this page ' \
+         "isn't available.</body></html>"
+    v, _ = classify("Instagram", "nobody", extract_profile(nf), nf)
+    ok(v == "absent", "soft-404 body -> absent (skipped)")
+    # a REAL profile with a person signal -> real
+    real = '<html lang="en"><head><title>Firas Alharbi (@firas_alharbi) on X</title>' \
+           '<meta property="og:description" content="1 followers · 4 following. ' \
+           'Joined Jul 2018."></head></html>'
+    v, _ = classify("Twitter/X", "firas_alharbi", extract_profile(real), real)
+    ok(v == "real", "X profile with follower signal -> real (kept)")
+
+
+def test_shells_do_not_become_accounts():
+    """End-to-end: a name whose handles resolve ONLY to login-walls / generic
+    pages must yield ZERO accounts (not 25 'likely' shells)."""
+    print("\n== shells never emitted as accounts (end-to-end) ==")
+    shell_page = _Resp(200, '<html lang="en"><head><title>Instagram</title></head></html>')
+    snap_page = _Resp(200, '<html lang="ar"><head>'
+        '<meta property="og:title" content="على سناب شات">'
+        '<meta property="og:description" content="أصبح متاحًا على سناب شات">'
+        '</head></html>')
+    class _AllShellHttp:
+        async def get(self, url, expect="text", params=None, **kw):
+            if "snapchat" in url:
+                return snap_page
+            return shell_page
+        async def post(self, url, data=None, **kw):
+            return "<html></html>"
+        async def close(self): pass
+    cfg = Config.load(profile="standard")
+    cfg.person_name = "فراس الحربي"; cfg.person_country = "Saudi Arabia"
+    cfg.person_city = "Al Madinah Al Munawwarah"
+    graph = IntelGraph()
+    seed = graph.add(EntityType.PERSON, "فراس الحربي", tags={"seed"})
+    asyncio.run(PersonaHunter(_Ctx(cfg, _AllShellHttp())).run(seed, graph))
+    accounts = graph.by_type(EntityType.SOCIAL_PROFILE)
+    ok(len(accounts) == 0, "no login-wall/shell emitted as a social_profile account")
+    summ = graph.run_meta.get("persona", {}).get("result_summary", {})
+    ok(summ.get("shell_discarded", 0) >= 1, "shells are counted in shell_discarded")
+    ok(summ.get("confirmed_accounts", -1) == 0, "0 confirmed accounts from shells")
+
+
 def test_phone_carrier_no_expand():
     """The phone contamination bug: carrier ORG + phone GEO must be tagged
     'no-expand' so the engine never cascades them into corporate infra
@@ -235,6 +335,9 @@ if __name__ == "__main__":
     test_username_gen()
     test_name_spelling_variants()
     test_search_query_building()
+    test_search_engine_fallback()
+    test_existence_gate()
+    test_shells_do_not_become_accounts()
     test_phone_carrier_no_expand()
     test_geo_scoring()
     test_extract()

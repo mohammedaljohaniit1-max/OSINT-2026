@@ -28,6 +28,7 @@ from . import locale as L
 from .name_engine import generate_usernames, display_name_queries
 from .geo_confirm import GeoConfirmer
 from .extract import extract_profile
+from .existence import classify as classify_existence
 from .persona import ProfileHit, fuse
 
 # Platforms whose PUBLIC profile page exposes name/bio/location in HTML meta
@@ -104,7 +105,9 @@ class PersonaHunter(Module):
             "display_queries": display_name_queries(name),
             "_rejected_count": 0,
             "_rejected_examples": [],
+            "_search_engines_used": [],
         }
+        self._run_pm = graph.run_meta["persona"]
 
         hits: list[ProfileHit] = []
         deadline = time.monotonic() + TIME_BUDGET.get(cfg.profile, 40)
@@ -223,17 +226,45 @@ class PersonaHunter(Module):
         return SD.extract_profiles(results)
 
     async def _web_search(self, query: str) -> list[dict]:
-        """SearXNG (preferred) -> DuckDuckGo HTML fallback. Zero API keys."""
-        import re as _re
-        import urllib.parse as _up
+        """Keyless web search with a RESILIENT fallback chain so the feature
+        works even when SearXNG isn't running and one engine is rate-limited:
+
+            SearXNG (json)  ->  DuckDuckGo HTML  ->  Bing HTML  ->  Mojeek HTML
+
+        Returns [{url,title,content}]. Records which engine answered so the
+        report can tell the operator whether search-discovery actually ran.
+        """
+        # 1) SearXNG (best — no CAPTCHA, aggregates many engines)
         sx = (self.ctx.config.searxng_url or "").rstrip("/")
         if sx:
-            data = await self.ctx.http.get(
-                f"{sx}/search", params={"q": query, "format": "json"},
-                expect="json")
-            if isinstance(data, dict) and data.get("results"):
-                return data["results"]
-        # fallback: DuckDuckGo HTML (no key, no CAPTCHA for this endpoint)
+            try:
+                data = await self.ctx.http.get(
+                    f"{sx}/search", params={"q": query, "format": "json"},
+                    expect="json")
+                if isinstance(data, dict) and data.get("results"):
+                    self._note_engine("searxng")
+                    return data["results"]
+            except Exception:
+                pass
+        # 2) keyless HTML engines, in order, until one yields rows
+        for engine in (self._ddg_html, self._bing_html, self._mojeek_html):
+            try:
+                rows = await engine(query)
+            except Exception:
+                rows = []
+            if rows:
+                return rows
+        return []
+
+    def _note_engine(self, name: str):
+        pm = getattr(self, "_run_pm", None)
+        if pm is not None:
+            eng = pm.setdefault("_search_engines_used", [])
+            if name not in eng:
+                eng.append(name)
+
+    async def _ddg_html(self, query: str) -> list[dict]:
+        import re as _re, urllib.parse as _up
         html = await self.ctx.http.post(
             "https://html.duckduckgo.com/html/", data={"q": query})
         if not html:
@@ -243,12 +274,54 @@ class PersonaHunter(Module):
                 r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
                 html):
             href = _up.unquote(m.group(1))
-            # DDG wraps external links; pull the real uddg= target if present
             mm = _re.search(r"uddg=([^&]+)", href)
             if mm:
                 href = _up.unquote(mm.group(1))
             title = _re.sub("<.*?>", "", m.group(2))
             out.append({"url": href, "title": title, "content": ""})
+        if out:
+            self._note_engine("duckduckgo")
+        return out
+
+    async def _bing_html(self, query: str) -> list[dict]:
+        import re as _re, urllib.parse as _up
+        html = await self.ctx.http.get(
+            "https://www.bing.com/search",
+            params={"q": query, "count": "20", "setlang": "en"})
+        if not html:
+            return []
+        out = []
+        # Bing organic results: <li class="b_algo"> ... <h2><a href="URL">TITLE</a>
+        for m in _re.finditer(
+                r'<h2>\s*<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>', html):
+            href = _up.unquote(m.group(1))
+            title = _re.sub("<.*?>", "", m.group(2))
+            out.append({"url": href, "title": title, "content": ""})
+        if out:
+            self._note_engine("bing")
+        return out
+
+    async def _mojeek_html(self, query: str) -> list[dict]:
+        import re as _re, urllib.parse as _up
+        html = await self.ctx.http.get(
+            "https://www.mojeek.com/search", params={"q": query})
+        if not html:
+            return []
+        out = []
+        for m in _re.finditer(
+                r'<a[^>]+class="ob"[^>]+href="(https?://[^"]+)"', html):
+            out.append({"url": _up.unquote(m.group(1)), "title": "",
+                        "content": ""})
+        # generic anchor fallback for Mojeek layout changes
+        if not out:
+            for m in _re.finditer(
+                    r'<a[^>]+href="(https?://(?!www\.mojeek)[^"]+)"[^>]*>(.*?)</a>',
+                    html):
+                out.append({"url": _up.unquote(m.group(1)),
+                            "title": _re.sub("<.*?>", "", m.group(2)),
+                            "content": ""})
+        if out:
+            self._note_engine("mojeek")
         return out
 
     async def _probe_url(self, platform, url, handle, confirmer, hits, graph,
@@ -273,6 +346,20 @@ class PersonaHunter(Module):
                           confirmer, hits, graph, *, origin):
         """Shared scoring/verdict logic for both discovery and handle probes."""
         prof = extract_profile(body)
+
+        # ---- EXISTENCE GATE (kills the #1 false-positive: login-walls, generic
+        #      Snapchat /add pages, soft-404s that return 200 for ANY handle) ---
+        ex_verdict, ex_reason = classify_existence(platform, handle, prof, body)
+        pm = graph.run_meta["persona"]
+        pm.setdefault("_shell_count", 0)
+        pm.setdefault("_absent_count", 0)
+        if ex_verdict == "shell":
+            pm["_shell_count"] += 1
+            return           # a page that exists for everyone proves nothing
+        if ex_verdict == "absent":
+            pm["_absent_count"] += 1
+            return           # explicit not-found
+
         cs = confirmer.score(
             handle=handle,
             display_name=prof.get("display_name", ""),
@@ -281,8 +368,22 @@ class PersonaHunter(Module):
             language=prof.get("language", ""),
             links=prof.get("links", []),
         )
+        # ---- UNKNOWN-existence demotion --------------------------------------
+        # If the page exposed NO personal fields (a JS-only SPA shell where we
+        # can neither confirm nor deny), a raw handle match must NOT be allowed
+        # to graduate to "likely" — it becomes at best "possible" so it's
+        # summarised, not paraded as a finding.
+        real_profile = (ex_verdict == "real")
+        if not real_profile:
+            if cs.verdict in ("confirmed", "likely"):
+                # keep confirmed ONLY if the CITY itself was matched (strong geo
+                # evidence overrides a thin page); otherwise demote to possible.
+                if not (cs.verdict == "confirmed" and cs.in_city):
+                    cs.verdict = "possible"
+                    cs.total = min(cs.total, 34)
+                    cs.reasons.append(f"⚠ page had no real profile fields ({ex_reason})")
+
         if cs.verdict == "rejected":
-            pm = graph.run_meta["persona"]
             pm["_rejected_count"] += 1
             if len(pm["_rejected_examples"]) < 12:
                 pm["_rejected_examples"].append({
@@ -292,10 +393,16 @@ class PersonaHunter(Module):
                     "reason": (cs.reasons[0] if cs.reasons else ""),
                 })
             return
+        if cs.verdict == "possible":
+            pm.setdefault("_possible_count", 0)
+            pm["_possible_count"] += 1
+            return
         # avoid duplicate hits for the same URL
         if any(h.url == url for h in hits):
             return
         reasons = list(cs.reasons)
+        if real_profile:
+            reasons.append("verified: real profile page")
         if origin:
             reasons.append(f"source: {origin}")
         hits.append(ProfileHit(
@@ -332,13 +439,16 @@ class PersonaHunter(Module):
     MAX_CONFIRMED_PERSONAS = 3
 
     def _emit(self, hits, graph, name, country, raw_name):
-        city_disp = graph.run_meta["persona"].get("city") or country or "?"
+        pm = graph.run_meta["persona"]
+        city_disp = pm.get("city") or country or "?"
 
-        # rejected hits were already stored as low findings inside probe(); we
-        # only summarize their COUNT here from run_meta counters.
+        # rejected/possible/shell counts live in run_meta counters (they are NOT
+        # emitted as entities — that was the 'giant useless log' the user hated).
         confirmed = [h for h in hits if h.verdict == "confirmed"]
         likely = [h for h in hits if h.verdict == "likely"]
-        possible = [h for h in hits if h.verdict == "possible"]
+        possible_count = pm.get("_possible_count", 0)
+        shell_count = pm.get("_shell_count", 0)
+        absent_count = pm.get("_absent_count", 0)
 
         emitted_persona = False
 
@@ -381,14 +491,19 @@ class PersonaHunter(Module):
                 risk=RiskLevel.MEDIUM)
             emitted_persona = True
 
-        # ---- POSSIBLE / REJECTED: compact COUNT summaries only ----
-        rej_examples = graph.run_meta.get("persona", {}).get("_rejected_examples", [])
-        rej_count = graph.run_meta.get("persona", {}).get("_rejected_count", 0)
+        # ---- POSSIBLE / REJECTED / NOISE: compact COUNT summary only ----
+        rej_examples = pm.get("_rejected_examples", [])
+        rej_count = pm.get("_rejected_count", 0)
         summary_bits = []
-        if possible:
-            summary_bits.append(f"{len(possible)} weak-name match(es) ignored")
+        if possible_count:
+            summary_bits.append(f"{possible_count} weak / unverifiable match(es) ignored")
         if rej_count:
             summary_bits.append(f"{rej_count} same-name account(s) in OTHER cities rejected")
+        if shell_count:
+            summary_bits.append(f"{shell_count} login-wall / generic page(s) discarded "
+                                f"(exist for any handle — no proof)")
+        if absent_count:
+            summary_bits.append(f"{absent_count} not-found page(s) skipped")
         if summary_bits:
             graph.add(
                 EntityType.PERSONA,
@@ -397,21 +512,38 @@ class PersonaHunter(Module):
                 tags={"persona", "person-search", "summary", "no-expand"},
                 metadata={"name": raw_name, "verdict": "summary",
                           "note": "; ".join(summary_bits),
-                          "possible_count": len(possible),
+                          "possible_count": possible_count,
+                          "shell_discarded": shell_count,
+                          "absent_skipped": absent_count,
                           "rejected_count": rej_count,
                           "rejected_examples": rej_examples[:self.MAX_REJECTED_EXAMPLES]},
                 evidence=ev("persona_hunter", "",
                             "noise filtered so results stay useful: "
                             + "; ".join(summary_bits)))
 
-        graph.run_meta["persona"]["result_summary"] = {
-            "confirmed_personas": len(clusters),
+        engines = pm.get("_search_engines_used", [])
+        n_disc = len(pm.get("discovered_profiles", []))
+        pm["result_summary"] = {
+            "confirmed_personas": len(clusters) if confirmed else 0,
             "confirmed_accounts": len(confirmed),
             "likely_accounts": len(likely),
-            "possible_ignored": len(possible),
+            "possible_ignored": possible_count,
+            "shell_discarded": shell_count,
+            "absent_skipped": absent_count,
             "rejected_wrong_city": rej_count,
+            "search_engines_used": engines,
+            "search_discovered_profiles": n_disc,
             "found_target": emitted_persona and bool(confirmed),
         }
+        # actionable guidance when the search-discovery path was blind (this is
+        # exactly what happened on the operator's Kali run: SearXNG down + DDG
+        # empty -> 0 discovered profiles -> fell back to handle-guessing only).
+        if not engines:
+            pm["result_summary"]["search_note"] = (
+                "No search engine answered (SearXNG down and HTML engines "
+                "rate-limited/blocked). Person discovery ran on handle-guessing "
+                "ONLY. For full name+city discovery start local SearXNG: "
+                "./install.sh --with-searxng")
 
     def _make_persona(self, graph, raw_name, country, city_disp, cluster,
                       *, verdict, agg, label, risk):
