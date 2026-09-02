@@ -47,6 +47,16 @@ class Config:
     max_subdomains_resolve: int = 5000
     output_dir: str = "reports"
 
+    # ── PERSONA HUNTER: person-search geo context ──────────────────────────
+    # When set (via `argus scan "<name>" --country .. --city ..`) the engine
+    # runs a person investigation locked to this locale: only accounts whose
+    # name matches AND whose location resolves to this city are ranked as the
+    # target; everything else is recorded as a low-confidence finding.
+    person_name: str = ""                    # raw name as the user typed it
+    person_country: str = ""                 # e.g. "Saudi Arabia" / "SA"
+    person_city: str = ""                    # e.g. "Al Madinah Al Munawwarah"
+    person_langs: list[str] = field(default_factory=list)  # [] = auto (ar+en)
+
     # optional keys (NONE required)
     keys: dict = field(default_factory=dict)
 

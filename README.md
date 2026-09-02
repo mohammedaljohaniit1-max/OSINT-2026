@@ -1,237 +1,354 @@
 <div align="center">
 
-# 🕵️ OSINT-2026 · `Argus`
+# 🛰️ Argus — OSINT-2026  ·  v2.0.0
 
-### إطار OSINT احترافي — أمر واحد، بدون أي مفاتيح API، يجمع كل شيء ويحلّله في تقرير
+```
+    ___
+   /   |  _________ ___  _______
+  / /| | / ___/ __ `/ / / / ___/
+ / ___ |/ /  / /_/ / /_/ (__  )
+/_/  |_/_/   \__, /\__,_/____/
+            /____/   Zero-API OSINT Engine
+        The hundred-eyed. It sees everything.
+```
 
-**أعطِه دومين / إيميل / رقم / يوزرنيم / IP / ASN — يكتشف نوعه تلقائياً، يشغّل 45+ وحدة، ويربط النتائج في رسم استخباراتي واحد.**
+**A professional, zero-API-key, deep-passive OSINT framework for Kali Linux.**
+Auto-detects the target, runs 50+ native modules & external-tool adapters with **no API keys**,
+correlates everything into one intelligence graph, and produces professional reports.
 
-`v1.0.0` · Python 3.9+ · Kali / Debian / Ubuntu / Docker · Zero-API
+*إطار احترافي لجمع المعلومات مفتوحة المصدر — بدون أي مفاتيح API، سلبي وعميق جداً، مع محرك بحث عن الأشخاص "Persona Hunter".*
 
 </div>
 
 ---
 
-## 📖 الفكرة باختصار
+## 📌 What's new in v2.0.0 — الجديد في الإصدار الثاني
 
-بدل تشغيل عشرات الأدوات يدوياً وتجميع نتائجها المبعثرة، تكتب أمراً واحداً:
-
-```bash
-argus scan company.com
-```
-
-فيقوم Argus بـ:
-1. **اكتشاف نوع الهدف تلقائياً** (دومين؟ إيميل؟ رقم؟ IP؟…) — بدون أي خيارات.
-2. **تشغيل كل الوحدات المناسبة بالتوازي** (مصادر مجانية + سكربتات عبقرية + أدوات خارجية).
-3. **التوسّع التتابعي (Cascade):** الدومين ينتج نطاقات فرعية وإيميلات → الإيميلات تُغذّي وحدات التسريبات → أسماء الموظفين تُغذّي توليد الإيميلات والسوشال… كل ذلك آلياً.
-4. **الربط والتقييم:** إزالة التكرار، رفع الثقة عند تعدد المصادر، حساب درجة الخطورة، استنتاج العلاقات.
-5. **تقرير احترافي:** HTML تفاعلي + JSON + Markdown + GEXF (لـ Gephi).
-
-> **مبدأ Zero-API:** كل شيء يعمل **بدون أي مفتاح**. المفاتيح اختيارية فقط لرفع حدود الطلبات.
+| المزية · Feature | الوصف · Description |
+|---|---|
+| 🧭 **Persona Hunter** | ابحث عن **شخص** بالاسم + الدولة + المدينة بأي لغة (عربي/إنجليزي). يجد الحسابات في **المدينة المحددة فقط** ويضع **روابط الحسابات**. Search a **person** by name + country + city in any language and get **direct account links**, locked to that city only. |
+| 🌍 **Locale brain** | تحويل تلقائي عربي↔لاتيني للأسماء + قاموس مدن/دول (خليجي + عالمي) بكل التهجئات. Arabic↔Latin transliteration + a gazetteer of Gulf/world cities & countries with all spellings. |
+| 🎯 **Geo-Confirmation** | كل حساب يُقيّم 0–100 (اسم × مدينة × إشارات) مع سبب واضح وحكم. قاعدة صارمة: نفس الاسم في مدينة أخرى → **مرفوض**. Every account scored 0–100 with explainable reasons; same name in a *different* city → **REJECTED**. |
+| 🔗 **Cross-account fusion** | حسابات نفس الشخص (عربي + إنجليزي، معرّفات مختلفة) تُدمج في **شخصية واحدة**. Same person's accounts fuse into ONE persona. |
+| 🧹 **Lean results** | لا مزيد من "ملف عملاق بدون فائدة". النتائج مرتبة بطبقات: مؤكد / محتمل / ملخص. No more giant useless logs — tiered output: confirmed / likely / summary. |
+| 🛡️ **Scope Guard** | إصلاح تلوث الكيانات (كان ينتج 18,005 كياناً وهمياً). Eliminated the 15k+ fake-entity contamination. |
 
 ---
 
-## 🚀 التثبيت والتشغيل على Kali Linux (الأوامر مباشرة)
+## 📚 Table of Contents · الفهرس
+1. [Requirements · المتطلبات](#-requirements--المتطلبات)
+2. [Install · التنزيل والتثبيت](#-install--التنزيل-والتثبيت)
+3. [Uninstall / Update · الحذف والتحديث](#-uninstall--update--الحذف-والتحديث)
+4. [The 5 canonical commands · الأوامر الخمسة](#-the-5-canonical-commands--الأوامر-الخمسة)
+5. [🧭 Persona Hunter · البحث عن شخص](#-persona-hunter--البحث-عن-شخص)
+6. [Scan profiles · ملفات الفحص](#-scan-profiles--ملفات-الفحص)
+7. [Management commands · أوامر الإدارة](#-management-commands--أوامر-الإدارة)
+8. [Architecture · البنية](#-architecture--البنية)
+9. [Modules · الوحدات](#-modules--الوحدات)
+10. [How Persona Hunter works · كيف يعمل داخلياً](#-how-persona-hunter-works-internally--كيف-يعمل-داخلياً)
+11. [Reports · التقارير](#-reports--التقارير)
+12. [Project structure · هيكل المشروع](#-project-structure--هيكل-المشروع)
+13. [Extending Argus · التوسيع والتطوير](#-extending-argus--التوسيع-والتطوير)
+14. [Tests · الاختبارات](#-tests--الاختبارات)
+15. [Legal · إخلاء المسؤولية](#-legal--إخلاء-المسؤولية)
 
-### 1) التثبيت بأمر واحد
+---
+
+## 🧱 Requirements · المتطلبات
+- **Kali Linux** (or any Debian/Ubuntu). Also works on macOS/WSL.
+- **Python 3.9+** (3.11+ recommended).
+- `git`, `pip`. External OSINT tools are **optional** — Argus works fully without them (native modules cover the same ground).
+
+---
+
+## 📥 Install · التنزيل والتثبيت
 
 ```bash
-# استنساخ المستودع
+# 1) Clone
 git clone https://github.com/mohammedaljohaniit1-max/OSINT-2026.git
 cd OSINT-2026
 
-# تشغيل المثبّت (يثبّت كل شيء: بايثون + الأدوات الخارجية + القوالب)
+# 2) Install (creates a venv, installs the Python core, links the `argus` CLI,
+#    and installs optional external tools if apt is available)
 chmod +x install.sh
 ./install.sh
-```
 
-المثبّت يقوم بـ:
-- تثبيت حزم النظام (python3, git, nmap, whois, dnsutils, tor…).
-- إنشاء بيئة بايثون معزولة `.venv` + تثبيت نواة Argus.
-- تثبيت أدوات OSINT من مستودعات Kali (theHarvester, sherlock, maigret, whatweb, amass…).
-- تثبيت أدوات Go (subfinder, httpx, naabu, nuclei, dnsx, assetfinder, gau, katana).
-- تثبيت holehe عبر pipx وماسحات الأسرار (trufflehog, gitleaks).
-
-خيارات إضافية:
-```bash
-./install.sh --minimal        # نواة بايثون فقط (بدون أدوات خارجية) — يعمل فوراً
-./install.sh --with-searxng   # يشغّل أيضاً SearXNG محلياً (يتطلب docker) لِـ Google Dorking بلا كابتشا
-./install.sh --update         # تحديث القوالب/الأدوات
-```
-
-### 2) تشغيل ملف التجهيز / التحقق من الجاهزية
-
-```bash
-# فعّل البيئة (مرة واحدة في كل جلسة طرفية)
+# 3) Activate the environment (each new shell)
 source .venv/bin/activate
 
-# فحص صحّة البيئة: أي مكتبات/أدوات موجودة وأي منها ناقص
+# 4) Verify
 argus doctor
-
-# استعراض كل الوحدات المُحمّلة (45+)
 argus modules
 ```
 
-> إن لم يظهر أمر `argus`، استخدم البديل المكافئ تماماً: `python3 -m argus.cli ...` أو `python3 argus.py ...`
-
-### 3) تشغيل الأداة على هدف
-
+**Minimal install** (Python core only, no external tools):
 ```bash
-# على موقع/دومين (الاستخدام الأساسي)
-argus scan company.com
-
-# على إيميل موظّف (تسريبات + حسابات مرتبطة)
-argus scan john.doe@company.com
-
-# على رقم هاتف (دولة/مشغّل/نوع الخط + بصمة على الويب)
-argus scan +14155552671
-
-# على يوزرنيم (بحث في 45+ منصّة)
-argus scan johndoe
-
-# على IP أو نطاق أو ASN
-argus scan 8.8.8.8
-argus scan 8.8.8.0/24
-argus scan AS15169
+./install.sh --minimal
 ```
 
-### 4) اختيار عمق الفحص (Profiles)
-
+**Run without installing** (standalone launcher):
 ```bash
-argus scan company.com -p quick      # سريع وسطحي
-argus scan company.com -p standard   # الافتراضي (متوازن، سلبي بالكامل)
-argus scan company.com -p deep --active --smtp   # عميق: فحص منافذ + nuclei + تحقّق SMTP من الإيميلات
-argus scan company.com -p stealth --tor          # عبر Tor، بطيء ومتخفٍّ
-argus scan company.com -p monitor    # مراقبة دورية: يقارن بالنتائج السابقة ويُبرز الجديد فقط
-```
-
-### 5) فتح التقرير
-
-```bash
-# التقارير تُحفظ في مجلّد reports/
-ls -1 reports/
-# افتح HTML التفاعلي في المتصفّح
-xdg-open reports/argus_company_com_*.html
-```
-
-### (اختياري) تشغيل عبر Docker بالكامل
-
-```bash
-docker compose up -d                              # يشغّل Argus + SearXNG + Tor
-docker compose exec argus argus scan company.com  # فحص من داخل الحاوية
+pip install -r requirements.txt
+python3 argus.py scan example.com
 ```
 
 ---
 
-## 🧠 كيف يجمع كل شيء بدون مفاتيح API؟ (الاستراتيجية)
+## ♻️ Uninstall / Update · الحذف والتحديث
 
-| التحدّي | الحل في Argus |
-|---|---|
-| Google يحظر الـ scraping (كابتشا/بصمة TLS) | **SearXNG محلي** يجمع 20+ محرّك ويعيد JSON نظيفاً → نطلق حزمة Dorks عليه بلا كابتشا. وإن لم يكن مُشغّلاً → fallback إلى DuckDuckGo HTML. |
-| فحص التسريبات يتطلب مفاتيح مدفوعة عادةً | **XposedOrNot** (مجاني بلا مفتاح) لفحص الإيميل، و **ProxyNova COMB** لفهرس التسريبات المجمّعة. |
-| اكتشاف النطاقات الفرعية | اتحاد **7 مصادر مجانية**: crt.sh, CertSpotter, HackerTarget, OTX, RapidDNS, Anubis-DB, Wayback/CommonCrawl/urlscan. |
-| الحظر عند كثرة الطلبات | تدوير User-Agent، تحديد معدّل لكل مضيف، إعادة محاولة، ودعم Tor/بروكسي. |
-| الويب المظلم | **Ahmia** (يُفهرِس onion من الويب العادي، بلا Tor) لإشارات الانكشاف — بدون تنزيل بيانات مسروقة. |
+```bash
+./install.sh --uninstall     # removes venv, reports, SearXNG container, entry point
+./install.sh --update        # refresh external tools & templates
+```
 
 ---
 
-## 🧩 المكوّنات الثلاثة
+## 🎛️ The 5 canonical commands · الأوامر الخمسة
 
-1. **طبقة التنسيق (Orchestrator):** العقل الذي يكتشف الهدف، يخطّط، ينفّذ بالتوازي في موجات تتابعية، ثم يربط ويقيّم — `argus/core/`.
-2. **المصادر والأدوات الجاهزة (Sources + Adapters):** 22 مصدراً مجانياً + 14 مُحوِّلاً لأقوى الأدوات (تعمل إن وُجدت، وتُتجاهَل بصمت إن غابت).
-3. **السكربتات العبقرية (Native "الوصفة السرّية"):** 9 وحدات تغطّي ما تعجز عنه الأدوات الجاهزة (أدناه).
+Argus **auto-detects** the target type (domain, IP, email, phone, username, **person**). One command shape for everything:
 
----
+```bash
+argus scan <target> [--profile deep|standard|quick|stealth] [--active]
+```
 
-## 💡 السكربتات العبقرية (Native Modules) — الوصفة السرّية
-
-كل واحدة تطبّق فكرة "خارج الصندوق" لا توفّرها الأدوات الجاهزة:
-
-| الوحدة | الفكرة العبقرية | الفائدة العملية |
+| # | Example · مثال | Detected as |
 |---|---|---|
-| **favicon_pivot** | حساب بصمة MurmurHash3 للـ favicon (نفس بصمة Shodan) | يكشف كل خوادم الشركة التي تشارك نفس الأيقونة حتى لو خلف دومينات/IPs مختلفة (Shadow-IT). يعطيك استعلام FOFA/Shodan جاهزاً. |
-| **email_permutator** | توليد أنماط إيميلات الموظّفين + **التحقّق عبر SMTP** واكتشاف catch-all | يبني إيميلات الموظّفين ويتحقّق منها **مجاناً بلا إرسال بريد**. |
-| **js_recon** | استخراج نقاط النهاية والأسرار من ملفّات JavaScript | يكشف مسارات API الداخلية، مفاتيح مسرّبة، buckets، ومعرّفات التتبّع. |
-| **wayback_diff** | إيجاد الملفّات الحسّاسة التي **حُذفت** لكنها باقية في الأرشيف | يستعيد `.env`/`.sql`/النسخ الاحتياطية "التي ظنّوا أنهم نظّفوها" ويمسحها بحثاً عن أسرار. |
-| **typosquat** | توليد الدومينات الشبيهة (homoglyph/TLD swap/…) وفحص أيّها **حيّ** | يكشف نطاقات التصيّد التي تنتحل العلامة التجارية. |
-| **breach_correlation** | تجميع تسريبات كل الموظّفين في **درجة انكشاف مؤسسي** | يحوّل الحقائق المبعثرة إلى مقياس تنفيذي، ويكتشف المورّد الطرف-الثالث المشترك من التسريبات المتكرّرة. |
-| **asn_sweep** | توسيع IP المملوك للشركة إلى **كامل الـ CIDR** مع استبعاد CDN المشترك | يكشف البنية التحتية المستضافة ذاتياً التي يفوّتها فحص الدومين وحده. |
-| **bucket_hunter** | توليد أسماء buckets محتملة وفحص S3/GCS/Azure **بلا مفتاح** | يكتشف مخازن سحابية عامة مكشوفة (تسريب بيانات). |
-| **tracker_pivot** | عكس معرّف Google Analytics/AdSense إلى **كل الدومينات** التي تضمّنه | يكشف محفظة مواقع الشركة/المالك نفسه. |
+| 1 | `argus scan example.com` | Domain |
+| 2 | `argus scan 8.8.8.8` | IP |
+| 3 | `argus scan vxxvvxxvv3@gmail.com` | Email |
+| 4 | `argus scan 0576365924` | Phone (Saudi local number) |
+| 5 | `argus scan "فراس الحربي" --country "Saudi Arabia" --city "Al Madinah Al Munawwarah"` | **Person → Persona Hunter** |
+
+> Default profile is **`deep`** = maximum *passive* depth. Active probing is **never** done unless you pass `--active`.
 
 ---
 
-## 🗂️ ماذا يُغطّى لكل نوع هدف؟
+## 🧭 Persona Hunter · البحث عن شخص
 
-<details><summary><b>🌐 دومين / موقع</b></summary>
+Search for a **person** by **name + country + city**, in **any language**. Argus finds every account that carries that name **and belongs to the specified city only** — and prints the **links** to those accounts.
 
-- نطاقات فرعية (7 مصادر + أدوات) · سجلّات DNS · وضع SPF/DMARC (قابلية الانتحال)
-- WHOIS/RDAP · ASN/CIDR/reverse-DNS · تقنيات الموقع
-- URLs مؤرشفة + ملفّات حسّاسة (Wayback/CommonCrawl) · نقاط نهاية وأسرار من JS
-- Google/GitHub Dorking · buckets سحابية · بصمة favicon · دومينات تصيّد شبيهة
-- إشارات ويب مظلم · إيميلات الموظّفين (توليد + تحقّق) · تقييم انكشاف مؤسسي
-</details>
+> مثال: ابحث عن `فراس الحربي` في **المدينة المنورة**. لو وُجد "فراس الحربي" في **الرياض** → لا يظهر. ولو كتب اسمه بالإنجليزية "Firas Al-Harbi" → يظهر ويُدمج مع حسابه العربي في **شخصية واحدة**.
 
-<details><summary><b>📧 إيميل</b></summary>
+### Usage · الاستخدام
+```bash
+# Arabic name + Arabic city
+argus scan "فراس الحربي" --country "السعودية" --city "المدينة المنورة" --profile deep
 
-- التسريبات (XposedOrNot) · بيانات اعتماد مسرّبة مموّهة (ProxyNova COMB)
-- الحسابات المرتبطة (holehe إن وُجد) · dorks خاصة بالإيميل · ربط بالدومين
-</details>
+# English name + English city (same person, still found)
+argus scan "Firas Al-Harbi" --country "Saudi Arabia" --city "Al Madinah Al Munawwarah"
 
-<details><summary><b>📱 رقم هاتف</b></summary>
+# You can also pass the name via --name and use the target as a label
+argus scan person --name "فراس الحربي" --country SA --city "Medina"
+```
 
-- الدولة/المنطقة/المشغّل/نوع الخط/المنطقة الزمنية (libphonenumber، بلا اتصال)
-- بصمة الرقم على الويب عبر محرّك الـ dorks
-</details>
+Country and city accept **any spelling**:
+`Saudi Arabia` = `السعودية` = `KSA` = `SA` → **SA**  ·  `Al Madinah Al Munawwarah` = `المدينة المنورة` = `Medina` → **al_madinah**.
 
-<details><summary><b>👤 يوزرنيم</b></summary>
+### What you get · النتيجة
+Results are **tiered** so you never get a useless dump:
 
-- فحص وجود الحساب في **45+ منصّة** (وحدة أصلية) + Sherlock/Maigret إن وُجدا
-</details>
+| Tier · الطبقة | Meaning · المعنى | Output |
+|---|---|---|
+| ✅ **CONFIRMED** | الاسم + المدينة المحددة مؤكدان | Fused persona(s), **full detail + links** |
+| 🟡 **LIKELY** | نفس الاسم لكن المدينة غير مذكورة | ONE grouped bucket (top matches) |
+| ⚪ **SUMMARY** | أسماء ضعيفة / **مدينة خاطئة** | عدد فقط + أمثلة قليلة للتدقيق |
 
----
-
-## 🛠️ الأدوات الخارجية المدعومة (Adapters)
-
-تعمل تلقائياً إن كانت مثبّتة، وإلا تُتجاهَل والوحدات الأصلية تغطّي الفجوة:
-
-`subfinder` · `amass` · `assetfinder` · `findomain` · `theHarvester` · `holehe` · `sherlock` · `maigret` · `httpx` · `naabu` · `nuclei` · `whatweb` · `gau` · `trufflehog`
+Each account row carries: **platform · link · handle · display name · location · score · why (reasons)**.
 
 ---
 
-## 📊 التقارير
+## ⚙️ Scan profiles · ملفات الفحص
 
-- **HTML** داكن احترافي: بطاقات خطورة + رسم علاقات تفاعلي + جدول قابل للبحث + أدلّة.
-- **JSON** كامل (للأتمتة) · **Markdown** (للتقارير) · **GEXF** (لتحليل الرسم في Gephi).
-- تصنيف الخطورة: `CRITICAL / HIGH / MEDIUM / LOW / INFO`.
+| Profile | Depth | Handles/platform (Persona) | Use |
+|---|---|---|---|
+| `quick` | shallow, fastest | 8 | quick triage |
+| `standard` | balanced | 18 | daily use |
+| `deep` *(default)* | maximum **passive** depth | 40 | full investigation |
+| `stealth` | low-noise, Tor-friendly | 12 | quiet recon |
 
 ---
 
-## 🏗️ بنية المشروع
+## 🗂️ Management commands · أوامر الإدارة
+
+```bash
+argus history                 # list stored scans
+argus report [scan_id]        # regenerate reports from a stored scan (default: latest)
+argus export [scan_id] -o f   # export raw JSON of a scan
+argus diff <target>           # diff two most recent scans of a target
+argus clean -k 5              # prune stored scans, keep newest 5
+argus doctor                  # environment health check
+argus modules                 # list all loaded modules
+```
+
+---
+
+## 🏗️ Architecture · البنية
+
+Argus is a **self-orchestrating blackboard engine** built from four components:
+
+1. **Detector** — classifies the raw target (domain / IP / email / phone / username / **person**, incl. Arabic-name detection).
+2. **Registry** — auto-discovers every `Module` under `argus/` and reads its `ModuleSpec` (accepts/produces entity types, active flag, priority, tags).
+3. **Engine (IntelGraph blackboard)** — seeds the target, then repeatedly picks modules whose *accepts* type is present, runs them, and folds their **Entities / Relationships / Evidence** back into one graph. A **Scope Guard** ensures only in-scope entities cascade — look-alikes and out-of-scope contacts are recorded as *findings* but never expanded (this killed the 15k-entity contamination).
+4. **Reporter** — renders the graph into JSON / Markdown / HTML / GEXF, including the **🧭 Persona Investigation** section.
+
+Everything shares a **unified data model**: `Entity`, `Relationship`, `Evidence` inside a single `IntelGraph`.
+
+---
+
+## 🧩 Modules · الوحدات
+
+51 modules load out of the box. Highlights:
+
+| Module | Category | Accepts → Produces | Notes |
+|---|---|---|---|
+| `persona_hunter` | native | PERSON → PERSONA / SOCIAL_PROFILE / USERNAME | 🧭 the person search engine |
+| `whois_rdap` | source | DOMAIN → registrar/org/contacts | passive RDAP |
+| `certs` (crt.sh) | source | DOMAIN → SUBDOMAIN | cert transparency |
+| `passive_dns` / `dns_records` | source | DOMAIN → IP/records | |
+| `deep_passive` | source | DOMAIN → many | aggregated passive |
+| `wayback` / `wayback_diff` | source/native | DOMAIN → URLs/changes | |
+| `breaches` / `breach_correlation` | source/native | EMAIL → breach findings | |
+| `email_enrich` / `email_permutator` | source/native | EMAIL/PERSON → emails | |
+| `username` | source | USERNAME → SOCIAL_PROFILE | |
+| `phone` | source | PHONE → carrier/region/dorks | handles `0576365924` as Saudi |
+| `github_dork` / `js_recon` | source/native | DOMAIN → leaks/endpoints | |
+| `typosquat` / `favicon_pivot` / `tracker_pivot` / `asn_sweep` / `bucket_hunter` | native | pivots | genius correlation |
+
+List them live with `argus modules`.
+
+---
+
+## 🧠 How Persona Hunter works internally · كيف يعمل داخلياً
+
+```
+raw name (any language)
+        │
+        ▼
+┌───────────────────────┐   COUNTRY/CITY (any spelling)
+│  Locale brain          │◄──────────────────────────────┐
+│  • strip honorifics    │                                │
+│    (bin/ibn/al/abu)    │        ┌──────────────────────┴───┐
+│  • ar↔latin translit   │        │  Gazetteer                │
+│  • spelling variants   │        │  countries + cities       │
+└──────────┬─────────────┘        │  (ar + en + aliases)      │
+           │                      └──────────────────────────┘
+           ▼
+┌───────────────────────┐
+│  Name→username engine  │  firas.alharbi, f.alharbi,
+│  (ranked real handles) │  alharbi.firas, +year suffixes…
+└──────────┬─────────────┘
+           ▼
+┌───────────────────────┐   probe 18 platforms (passive)
+│  Profile extractor     │   OpenGraph / Twitter meta /
+│  display,bio,loc,lang  │   JSON-LD Person / <html lang>
+└──────────┬─────────────┘
+           ▼
+┌───────────────────────┐   score = name × city × signals (0–100)
+│  Geo-Confirmer         │   HARD RULE: strong name + WRONG city
+│  verdict + reasons     │            → REJECTED
+└──────────┬─────────────┘
+           ▼
+┌───────────────────────┐   union-find: cross-link / same bio /
+│  Cross-account fusion  │   (confirmed + same gazetteer city +
+│  → ONE persona         │    shared handle stem)
+└──────────┬─────────────┘
+           ▼
+┌───────────────────────┐   CONFIRMED → full detail + links
+│  Lean tiered emission  │   LIKELY    → one bucket
+│                        │   POSSIBLE/REJECTED → count summary
+└───────────────────────┘
+```
+
+**Platforms probed (18):** GitHub, GitLab, Instagram, TikTok, YouTube, Twitter/X, Reddit, Telegram, Pinterest, Medium, Behance, SoundCloud, About.me, Gravatar, Keybase, Linktree, Snapchat, Threads.
+
+---
+
+## 📄 Reports · التقارير
+
+Every scan writes to `reports/`:
+- `*.json` — full machine-readable graph
+- `*.md` — Markdown summary
+- `*.html` — styled report incl. the **🧭 Persona Investigation** section (personas sorted by verdict, clickable account links, colour-coded confidence, "why" reasons)
+- `*.gexf` — graph for Gephi
+
+---
+
+## 🌲 Project structure · هيكل المشروع
 
 ```
 OSINT-2026/
+├── argus.py                 # standalone launcher
+├── install.sh               # installer (--minimal/--update/--uninstall)
+├── requirements.txt
+├── setup.py                 # v2.0.0, `argus` entry point
+├── config.yaml
 ├── argus/
-│   ├── core/          # النواة: models, detector, engine, correlator, store, registry
-│   ├── sources/       # 22 مصدراً مجانياً بلا مفتاح
-│   ├── adapters/      # 14 مُحوِّلاً لأدوات خارجية
-│   ├── native/        # 9 سكربتات عبقرية (الوصفة السرّية)
-│   ├── reporting/     # مولّد التقارير HTML/JSON/MD/GEXF
-│   └── cli.py         # واجهة الأوامر
-├── install.sh         # مثبّت Kali بأمر واحد
-├── docker-compose.yml # Argus + SearXNG + Tor
-├── config.yaml        # الإعدادات (كل شيء يعمل افتراضياً)
-└── tests/             # اختبار خطّ الأنابيب (offline)
+│   ├── __init__.py          # version + banner
+│   ├── cli.py               # scan + management commands, --name/--country/--city/--lang
+│   ├── core/
+│   │   ├── config.py        # + person_name/country/city/langs
+│   │   ├── models.py        # Entity/Relationship/Evidence, EntityType.PERSONA
+│   │   ├── detector.py      # target classifier (+ Arabic-name → PERSON)
+│   │   ├── registry.py      # module auto-discovery
+│   │   ├── engine.py        # blackboard engine + Scope Guard
+│   │   └── correlator.py
+│   ├── persona/             # 🧭 Persona Hunter
+│   │   ├── locale.py        # ar↔latin translit + COUNTRIES/CITIES gazetteer
+│   │   ├── name_engine.py   # name → ranked usernames + display queries
+│   │   ├── geo_confirm.py   # 0–100 scoring + REJECTED hard-rule
+│   │   ├── extract.py       # passive profile field extraction
+│   │   ├── persona.py       # ProfileHit + fuse() union-find
+│   │   └── investigator.py  # PersonaHunter module + lean tiered emission
+│   ├── sources/             # passive sources (whois, certs, dns, phone, …)
+│   ├── native/              # genius pivots (typosquat, favicon, asn, …)
+│   ├── adapters/            # external-tool wrappers (optional)
+│   ├── reporting/reporter.py# JSON/MD/HTML/GEXF + persona section
+│   └── utils/http.py        # async HTTP client (rate-limited, Tor-capable)
+└── tests/                   # test_persona, test_scope_guard, test_truthguards, test_pipeline
 ```
 
 ---
 
-## ⚖️ الاستخدام القانوني
+## 🧬 Extending Argus · التوسيع والتطوير
 
-هذه الأداة **للاختبارات الأمنية المُصرّح بها فقط** (شركتك، أو بتفويض كتابي). وحدات الويب المظلم تُبلّغ عن **إشارات الانكشاف فقط** ولا تُنزّل أو تعرض بيانات مسروقة. المستخدم مسؤول عن الالتزام بالقوانين المحلية.
+> "أي مشروع ناجح دائماً قابل للتطوير والتوسيع" — Argus is built to grow forever, like the big companies keep growing.
+
+**Add a new module** in 3 steps:
+1. Create a file under `argus/native/` (or `argus/sources/`) with a class subclassing `Module`.
+2. Give it a `spec = ModuleSpec(name=…, accepts={…}, produces={…}, priority=…, tags={…})`.
+3. That's it — the **Registry auto-discovers it**. No wiring needed.
+
+**Add a platform to Persona Hunter:** append one line to `PLATFORMS` in `argus/persona/investigator.py`.
+**Add a city/country/name spelling:** extend the dicts in `argus/persona/locale.py` (`CITIES`, `COUNTRIES`, `CANON_NAME_MAP`).
+**Tune result volume:** `MAX_LIKELY_ACCOUNTS` / `MAX_REJECTED_EXAMPLES` / `MAX_HANDLES` in `investigator.py`.
+
+---
+
+## ✅ Tests · الاختبارات
+
+```bash
+# persona unit + e2e (28 assertions across 7 tests)
+python3 -m pytest tests/test_persona.py -q
+
+# scope-guard, truth-guards, pipeline (standalone scripts)
+python3 tests/test_scope_guard.py
+python3 tests/test_truthguards.py
+python3 tests/test_pipeline.py
+```
+All green: **28 persona + 11 scope-guard + 8 truth-guard + pipeline**.
+
+---
+
+## ⚖️ Legal · إخلاء المسؤولية
+
+Argus performs **passive** OSINT on **publicly available** information only. Active probing is off by default and gated behind `--active`. Use it **only** on targets you are authorised to investigate, and in compliance with all applicable laws. The authors accept no liability for misuse.
+
+*هذه الأداة للاستخدام القانوني والمصرّح به فقط على المعلومات المتاحة للعموم. الفحص سلبي افتراضياً. المسؤولية على المستخدم.*
 
 ---
 
 <div align="center">
-<b>Argus — العملاق ذو المئة عين. يرى كل شيء.</b>
+
+**Argus — OSINT-2026 · v2.0.0 · The hundred-eyed. It sees everything.**
+
 </div>

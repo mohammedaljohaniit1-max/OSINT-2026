@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 
 setup(
     name="argus-osint",
-    version="1.0.0",
-    description="Argus — Zero-API OSINT Engine",
+    version="2.0.0",
+    description="Argus (OSINT-2026) — Zero-API Passive OSINT Engine with Persona Hunter",
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[

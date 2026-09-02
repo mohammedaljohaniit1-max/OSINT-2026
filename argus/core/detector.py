@@ -59,6 +59,10 @@ def _clean(raw: str) -> str:
     return raw.strip().strip('"').strip("'")
 
 
+def _has_arabic(s: str) -> bool:
+    return any("\u0600" <= c <= "\u06FF" or "\u0750" <= c <= "\u077F" for c in s)
+
+
 def detect(raw: str) -> Detection:
     """Return the single best-guess Detection for a raw target string."""
     t = _clean(raw)
@@ -117,9 +121,19 @@ def detect(raw: str) -> Detection:
     if "." in t and RE_DOMAIN.match(t):
         return Detection(EntityType.DOMAIN, t, t.lower(), 0.9, "valid domain")
 
-    # 10. Org (has space or multiple words / capitalized)
+    # 10. Person name (Arabic name, or multi-word human name)
+    #     Any string containing Arabic letters that isn't a domain/email is
+    #     treated as a PERSON (the person-search flow). Multi-word Latin
+    #     strings are PERSON too when they look like human names.
+    if _has_arabic(t):
+        return Detection(EntityType.PERSON, t, t, 0.7, "arabic name -> person")
     if " " in t:
-        return Detection(EntityType.ORG, t, t, 0.55, "multi-word -> organization/person")
+        # 2-4 alpha words, capitalized-ish -> a person's name; else org
+        words = t.split()
+        if 2 <= len(words) <= 4 and all(w.replace("-", "").replace(".", "").isalpha()
+                                        for w in words):
+            return Detection(EntityType.PERSON, t, t, 0.6, "multi-word name -> person")
+        return Detection(EntityType.ORG, t, t, 0.55, "multi-word -> organization")
 
     # 11. Username fallback
     if RE_USERNAME.match(t):

@@ -9,7 +9,7 @@ professional reports.
 Codename: Argus (the hundred-eyed giant of Greek myth - all-seeing).
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __codename__ = "Argus"
 __author__ = "OSINT-2026"
 

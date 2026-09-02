@@ -109,6 +109,69 @@ def _gexf(graph: IntelGraph) -> str:
 <nodes>{''.join(nodes)}</nodes><edges>{''.join(edges)}</edges></graph></gexf>"""
 
 
+_VERDICT_COLOR = {"confirmed": "#2ecc71", "likely": "#f1c40f",
+                  "possible": "#e67e22", "rejected": "#7f8c8d"}
+
+
+def _persona_section(graph: IntelGraph) -> str:
+    """Render the person-investigation block: unified personas, each with its
+    ranked accounts, geo verdict, and the explainable reasons per account.
+    Returns '' when the scan was not a person search."""
+    personas = graph.by_type(EntityType.PERSONA)
+    pmeta = graph.run_meta.get("persona")
+    if not personas and not pmeta:
+        return ""
+
+    ctx = ""
+    if pmeta:
+        ctx = (f'<div class="pctx">'
+               f'<b>{html.escape(str(pmeta.get("name","")))}</b>'
+               f' &nbsp;·&nbsp; Country: {html.escape(str(pmeta.get("country") or "—"))}'
+               f' &nbsp;·&nbsp; City: <b>{html.escape(str(pmeta.get("city") or "—"))}</b>'
+               f' &nbsp;·&nbsp; handles tried: {len(pmeta.get("handles_tried", []))}'
+               f'</div>')
+
+    cards = ""
+    # sort personas: confirmed first, then by aggregate score
+    def _key(p):
+        v = p.metadata.get("verdict", "possible")
+        order = {"confirmed": 0, "likely": 1, "possible": 2, "rejected": 3}
+        return (order.get(v, 4), -p.metadata.get("aggregate_score", 0))
+
+    for p in sorted(personas, key=_key):
+        md = p.metadata
+        v = md.get("verdict", "possible")
+        col = _VERDICT_COLOR.get(v, "#888")
+        accts = md.get("accounts", [])
+        rows = ""
+        for a in accts:
+            reasons = "<br>".join("· " + html.escape(str(r)) for r in a.get("reasons", [])[:4])
+            rows += (
+                f'<tr><td><a href="{html.escape(a["url"])}" target="_blank" '
+                f'style="color:#4da3ff">{html.escape(a["platform"])}</a></td>'
+                f'<td class="val">{html.escape(a.get("handle",""))}</td>'
+                f'<td>{html.escape(a.get("display_name","") or "—")}</td>'
+                f'<td>{html.escape(a.get("location","") or "—")}</td>'
+                f'<td><b style="color:{_VERDICT_COLOR.get(a.get("verdict"),"#888")}">'
+                f'{a.get("score",0)}</b></td>'
+                f'<td class="src">{reasons}</td></tr>')
+        cards += (
+            f'<div class="persona" style="border-color:{col}">'
+            f'<div class="ph"><span class="verdict" style="background:{col}">'
+            f'{v.upper()}</span> <b>{html.escape(md.get("name",""))}</b>'
+            f' <span class="pscore">score {md.get("aggregate_score",0)}</span>'
+            f' <span class="pcount">{md.get("account_count",0)} account(s)</span></div>'
+            f'<table class="patbl"><thead><tr><th>Platform</th><th>Handle</th>'
+            f'<th>Name</th><th>Location</th><th>Score</th><th>Why</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>')
+
+    if not cards:
+        cards = '<div class="pctx">No matching accounts confirmed in the target city.</div>'
+
+    return (f'<h2>🧭 Persona Investigation</h2>{ctx}'
+            f'<div class="personas">{cards}</div>')
+
+
 def _html(graph: IntelGraph) -> str:
     m = graph.run_meta
     st = graph.stats()
@@ -149,6 +212,9 @@ def _html(graph: IntelGraph) -> str:
     for t, n in sorted(st["by_type"].items(), key=lambda x: -x[1]):
         bytype += f'<span class="tag">{t}: {n}</span>'
 
+    # ── Persona Hunter section (person investigations) ──────────────────
+    persona_html = _persona_section(graph)
+
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Argus Report — {html.escape(str(m.get('target')))}</title>
@@ -180,6 +246,16 @@ h2{{margin-top:36px;border-left:4px solid #4da3ff;padding-left:12px}}
 .foot{{color:#5a6172;font-size:12px;margin-top:40px;text-align:center}}
 .searchbox{{margin:10px 0;padding:8px 12px;width:100%;background:#0d1017;border:1px solid #2a3550;
 border-radius:8px;color:#e6e6e6}}
+.pctx{{color:#a9b4c9;margin:8px 0 14px;font-size:14px}}
+.personas{{display:flex;flex-direction:column;gap:14px}}
+.persona{{background:#12161f;border:2px solid;border-radius:12px;padding:14px 16px}}
+.ph{{font-size:16px;margin-bottom:10px}}
+.verdict{{color:#0b0e14;font-weight:800;padding:3px 10px;border-radius:20px;font-size:12px}}
+.pscore{{color:#8a8f98;font-size:13px;margin-left:8px}}
+.pcount{{color:#4da3ff;font-size:13px;margin-left:8px}}
+.patbl{{width:100%;border-collapse:collapse;margin-top:6px;font-size:13px}}
+.patbl th{{color:#8a8f98;font-size:11px;text-transform:uppercase}}
+.patbl td,.patbl th{{padding:6px 8px;border-bottom:1px solid #1b2233;vertical-align:top}}
 </style></head><body>
 <header><h1>ARG<span>US</span> · OSINT Intelligence Report</h1>
 <div class="meta">Target: <b>{html.escape(str(m.get('target')))}</b> ({m.get('target_type')})
@@ -188,6 +264,7 @@ border-radius:8px;color:#e6e6e6}}
 <div class="wrap">
 <div class="cards">{cards}</div>
 <div>{bytype}</div>
+{persona_html}
 <h2>Relationship Graph</h2>
 <div id="net"></div>
 <h2>Findings ({st['total_entities']})</h2>

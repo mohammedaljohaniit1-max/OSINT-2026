@@ -38,6 +38,18 @@ def cmd_scan(args):
         cfg.verify_smtp = True
     if args.searxng:
         cfg.searxng_url = args.searxng
+    # ── Persona Hunter context (person search locked to a country + city) ──
+    if getattr(args, "name", None):
+        cfg.person_name = args.name
+    if getattr(args, "country", None):
+        cfg.person_country = args.country
+    if getattr(args, "city", None):
+        cfg.person_city = args.city
+    if getattr(args, "lang", None):
+        cfg.person_langs = [x.strip() for x in args.lang.split(",") if x.strip()]
+    # if the target itself is the name (no --name), treat it as the person name
+    if not cfg.person_name and (cfg.person_country or cfg.person_city):
+        cfg.person_name = args.target
 
     det = detect(args.target)
     print(_c(f"[Argus] Target: {det.value}  →  {det.type.value} "
@@ -262,6 +274,11 @@ def build_parser():
                    help="scan depth (default: deep = maximum passive depth)")
     s.add_argument("--active", action="store_true", help="enable active probing")
     s.add_argument("--tor", action="store_true", help="route via Tor")
+    # ── Persona Hunter: person search locked to a country + city ──
+    s.add_argument("--name", help="person's full name (ar/en) — enables person search")
+    s.add_argument("--country", help="country (any spelling: 'Saudi Arabia', 'SA', 'السعودية')")
+    s.add_argument("--city", help="city (any spelling: 'Al Madinah Al Munawwarah', 'المدينة المنورة')")
+    s.add_argument("--lang", help="restrict languages, comma-sep (default: auto ar+en+all)")
     s.add_argument("--smtp", action="store_true", help="SMTP email verification")
     s.add_argument("--searxng", help="SearXNG base URL")
     s.add_argument("--config", default="config.yaml")
