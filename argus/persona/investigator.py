@@ -19,6 +19,7 @@ tool, not just a domain scanner.
 from __future__ import annotations
 
 import asyncio
+import time
 
 from ..core.models import EntityType, IntelGraph, RiskLevel
 from ..core.module import Module, ModuleSpec
@@ -55,6 +56,18 @@ PLATFORMS = {
 # how many top-ranked handles we bother to check per platform (keeps it fast)
 MAX_HANDLES = {"quick": 8, "standard": 18, "deep": 40,
                "stealth": 12, "monitor": 18}
+
+# INTERNAL time budget (seconds) — the module MUST finish and emit whatever it
+# found before the engine's hard kill (60s passive / 120s active). If we simply
+# fired all handle×platform probes into asyncio.gather, a few slow hosts would
+# stall past 60s, the engine would TimeoutError the whole coroutine, and ALL
+# results would be lost (this is exactly why the person scan returned 0 hits).
+TIME_BUDGET = {"quick": 25, "standard": 40, "deep": 50,
+               "stealth": 40, "monitor": 40}
+# how many profile probes may be in flight at once (per module)
+PROBE_CONCURRENCY = 24
+# per-request ceiling so one dead host can't eat the whole budget
+PER_REQUEST_TIMEOUT = 8.0
 
 
 class PersonaHunter(Module):
@@ -94,10 +107,16 @@ class PersonaHunter(Module):
         }
 
         hits: list[ProfileHit] = []
+        deadline = time.monotonic() + TIME_BUDGET.get(cfg.profile, 40)
 
         async def probe(platform, tmpl, marker, handle):
             url = tmpl.format(u=handle)
-            r = await self.ctx.http.get(url, expect="response")
+            try:
+                r = await asyncio.wait_for(
+                    self.ctx.http.get(url, expect="response"),
+                    timeout=PER_REQUEST_TIMEOUT)
+            except (asyncio.TimeoutError, Exception):
+                return
             if r is None:
                 return
             code = getattr(r, "status_code", 0)
@@ -106,45 +125,186 @@ class PersonaHunter(Module):
                 code == 200 and marker.lower() not in body.lower())
             if not exists:
                 return
-            prof = extract_profile(body)
-            cs = confirmer.score(
-                handle=handle,
-                display_name=prof.get("display_name", ""),
-                bio=prof.get("bio", ""),
-                location=prof.get("location", ""),
-                language=prof.get("language", ""),
-                links=prof.get("links", []),
-            )
-            if cs.verdict == "rejected":
-                # DO NOT emit a full entity per rejection (that is what created
-                # the "giant useless log"). Just COUNT it, and keep a few
-                # examples for audit — summarized later in _emit().
-                pm = graph.run_meta["persona"]
-                pm["_rejected_count"] += 1
-                if len(pm["_rejected_examples"]) < 12:
-                    pm["_rejected_examples"].append({
-                        "platform": platform, "url": url, "handle": handle,
-                        "location": prof.get("location", ""),
-                        "conflict_city": cs.conflict_city,
-                        "reason": (cs.reasons[0] if cs.reasons else ""),
-                    })
-                return
-            hits.append(ProfileHit(
-                platform=platform, url=url, handle=handle,
-                display_name=prof.get("display_name", ""),
-                bio=prof.get("bio", ""), location=prof.get("location", ""),
-                language=prof.get("language", ""), links=prof.get("links", []),
-                score=cs.total, verdict=cs.verdict, reasons=cs.reasons,
-            ))
+            self._score_and_record(platform, url, handle, body,
+                                   confirmer, hits, graph, origin="handle probe")
 
-        tasks = [probe(p, t, m, h)
+        # -- SEARCH-ENGINE DISCOVERY FIRST (finds people with 0 followers) ----
+        # A person with no followers still shows up when you *search their name
+        # + city*, so we dork the display-name queries and mine any profile URLs
+        # / handles the results expose, then feed those handles into the probe
+        # pool alongside the generated ones. This is the genius bit that plain
+        # handle-guessing can't do.
+        discovered_rows: list[dict] = []
+        try:
+            discovered_rows = await asyncio.wait_for(
+                self._search_discovery(name, city_meta, country),
+                timeout=max(1.0, min(20.0, deadline - time.monotonic())))
+        except (asyncio.TimeoutError, Exception):
+            discovered_rows = []
+
+        # probe every directly-discovered profile URL on ITS platform first —
+        # these are the real people (found by name+city search, not guessed).
+        disc_handles = []
+        for row in discovered_rows:
+            disc_handles.append(row["handle"])
+            await self._probe_url(row["platform"], row["url"], row["handle"],
+                                  confirmer, hits, graph,
+                                  origin="name+city search")
+
+        # merge discovered handles into the generated pool (dedup, discovered
+        # first). Only CLEAN, portable handles get swept across all 18 platforms
+        # — a platform-specific id like LinkedIn's 'firas-alharby-123' or a
+        # hyphenated slug is meaningless on GitHub/Instagram, so we keep those
+        # to their own discovered URL (already probed above) and don't spray them.
+        def _portable(h):
+            return h and "-" not in h and not any(c.isdigit() for c in h[-3:]) \
+                   and 3 <= len(h) <= 30
+        sweepable_disc = [h for h in disc_handles if _portable(h)]
+        seen = set()
+        merged = []
+        for h in sweepable_disc + handles:
+            if h and h not in seen:
+                seen.add(h)
+                merged.append(h)
+        handles = merged
+        graph.run_meta["persona"]["handles_tried"] = handles
+        graph.run_meta["persona"]["discovered_handles"] = disc_handles
+        graph.run_meta["persona"]["discovered_profiles"] = [
+            {"platform": r["platform"], "url": r["url"]} for r in discovered_rows]
+
+        # -- BOUNDED, TIME-BUDGETED PROBING (always returns partial results) ---
+        sem = asyncio.Semaphore(PROBE_CONCURRENCY)
+
+        async def bounded(platform, tmpl, marker, handle):
+            if time.monotonic() >= deadline:
+                return
+            async with sem:
+                if time.monotonic() >= deadline:
+                    return
+                await probe(platform, tmpl, marker, handle)
+
+        tasks = [asyncio.create_task(bounded(p, t, m, h))
                  for h in handles
                  for p, (t, m) in PLATFORMS.items()]
-        # bounded concurrency (respect global semaphore via gather; http client
-        # already rate-limits per host)
-        await asyncio.gather(*tasks)
+        remaining = max(1.0, deadline - time.monotonic())
+        done, pending = await asyncio.wait(tasks, timeout=remaining)
+        # cancel anything still running past the budget — we emit what we have
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
         self._emit(hits, graph, name, country, raw_name)
+
+    # ------------------------------------------------------------------ #
+    #  Search-engine people discovery (finds 0-follower / nickname people)
+    # ------------------------------------------------------------------ #
+    async def _search_discovery(self, name, city_meta, country) -> list[dict]:
+        """Dork 'name + city' across social sites, mine profile links.
+        Returns [{platform, url, handle, title}] rows (deduped)."""
+        from . import search_discovery as SD
+        queries = SD.build_queries(name, city_meta, country)
+        # cap how many queries we fire so we stay inside the budget
+        queries = queries[:14]
+        results: list[dict] = []
+        sem = asyncio.Semaphore(6)
+
+        async def one(q):
+            async with sem:
+                try:
+                    rows = await asyncio.wait_for(self._web_search(q),
+                                                  timeout=PER_REQUEST_TIMEOUT)
+                except (asyncio.TimeoutError, Exception):
+                    return
+                if rows:
+                    results.extend(rows)
+
+        await asyncio.gather(*[one(q) for q in queries], return_exceptions=True)
+        return SD.extract_profiles(results)
+
+    async def _web_search(self, query: str) -> list[dict]:
+        """SearXNG (preferred) -> DuckDuckGo HTML fallback. Zero API keys."""
+        import re as _re
+        import urllib.parse as _up
+        sx = (self.ctx.config.searxng_url or "").rstrip("/")
+        if sx:
+            data = await self.ctx.http.get(
+                f"{sx}/search", params={"q": query, "format": "json"},
+                expect="json")
+            if isinstance(data, dict) and data.get("results"):
+                return data["results"]
+        # fallback: DuckDuckGo HTML (no key, no CAPTCHA for this endpoint)
+        html = await self.ctx.http.post(
+            "https://html.duckduckgo.com/html/", data={"q": query})
+        if not html:
+            return []
+        out = []
+        for m in _re.finditer(
+                r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+                html):
+            href = _up.unquote(m.group(1))
+            # DDG wraps external links; pull the real uddg= target if present
+            mm = _re.search(r"uddg=([^&]+)", href)
+            if mm:
+                href = _up.unquote(mm.group(1))
+            title = _re.sub("<.*?>", "", m.group(2))
+            out.append({"url": href, "title": title, "content": ""})
+        return out
+
+    async def _probe_url(self, platform, url, handle, confirmer, hits, graph,
+                         *, origin):
+        """Fetch a specific profile URL and score it."""
+        try:
+            r = await asyncio.wait_for(
+                self.ctx.http.get(url, expect="response"),
+                timeout=PER_REQUEST_TIMEOUT)
+        except (asyncio.TimeoutError, Exception):
+            return
+        if r is None:
+            return
+        code = getattr(r, "status_code", 0)
+        body = getattr(r, "text", "") or ""
+        if code != 200:
+            return
+        self._score_and_record(platform, url, handle, body,
+                               confirmer, hits, graph, origin=origin)
+
+    def _score_and_record(self, platform, url, handle, body,
+                          confirmer, hits, graph, *, origin):
+        """Shared scoring/verdict logic for both discovery and handle probes."""
+        prof = extract_profile(body)
+        cs = confirmer.score(
+            handle=handle,
+            display_name=prof.get("display_name", ""),
+            bio=prof.get("bio", ""),
+            location=prof.get("location", ""),
+            language=prof.get("language", ""),
+            links=prof.get("links", []),
+        )
+        if cs.verdict == "rejected":
+            pm = graph.run_meta["persona"]
+            pm["_rejected_count"] += 1
+            if len(pm["_rejected_examples"]) < 12:
+                pm["_rejected_examples"].append({
+                    "platform": platform, "url": url, "handle": handle,
+                    "location": prof.get("location", ""),
+                    "conflict_city": cs.conflict_city,
+                    "reason": (cs.reasons[0] if cs.reasons else ""),
+                })
+            return
+        # avoid duplicate hits for the same URL
+        if any(h.url == url for h in hits):
+            return
+        reasons = list(cs.reasons)
+        if origin:
+            reasons.append(f"source: {origin}")
+        hits.append(ProfileHit(
+            platform=platform, url=url, handle=handle,
+            display_name=prof.get("display_name", ""),
+            bio=prof.get("bio", ""), location=prof.get("location", ""),
+            language=prof.get("language", ""), links=prof.get("links", []),
+            score=cs.total, verdict=cs.verdict, reasons=reasons,
+        ))
 
     # ------------------------------------------------------------------ #
     #  Result emission — LEAN & INTELLIGENT.
@@ -165,6 +325,11 @@ class PersonaHunter(Module):
     # tunable ceilings so output can never explode (still fully configurable)
     MAX_LIKELY_ACCOUNTS = 25
     MAX_REJECTED_EXAMPLES = 8
+    # a real person in a specific city is ONE identity (occasionally a couple).
+    # if fusion somehow yields more distinct confirmed clusters than this, we
+    # collapse the tail into a single same-city bucket so the output is never a
+    # wall of near-duplicate personas.
+    MAX_CONFIRMED_PERSONAS = 3
 
     def _emit(self, hits, graph, name, country, raw_name):
         city_disp = graph.run_meta["persona"].get("city") or country or "?"
@@ -179,16 +344,31 @@ class PersonaHunter(Module):
 
         # ---- CONFIRMED: fuse into personas, full detail (the real answer) ----
         clusters = fuse(confirmed)
-        for idx, cluster in enumerate(clusters):
-            best = max(cluster, key=lambda h: h.score)
+        # keep the strongest few as distinct personas; fold the rest into one
+        # "additional same-city accounts" bucket to stay lean.
+        head = clusters[:self.MAX_CONFIRMED_PERSONAS]
+        tail = clusters[self.MAX_CONFIRMED_PERSONAS:]
+        for idx, cluster in enumerate(head):
             agg = max(h.score for h in cluster)
             self._make_persona(
                 graph, raw_name, country, city_disp, cluster,
                 verdict="confirmed", agg=agg,
                 label=f"{name.display()} @ {city_disp}"
-                      + (f" #{idx+1}" if len(clusters) > 1 else ""),
+                      + (f" #{idx+1}" if len(head) > 1 else ""),
                 risk=RiskLevel.HIGH)
             emitted_persona = True
+        if tail:
+            tail_accts = [h for c in tail for h in c]
+            agg = max(h.score for h in tail_accts)
+            self._make_persona(
+                graph, raw_name, country, city_disp,
+                sorted(tail_accts, key=lambda h: h.score, reverse=True)[:self.MAX_LIKELY_ACCOUNTS],
+                verdict="confirmed", agg=agg,
+                label=f"{name.display()} @ {city_disp} — "
+                      f"{len(tail_accts)} more same-city account(s)",
+                risk=RiskLevel.HIGH)
+            emitted_persona = True
+            clusters = head + [tail_accts]  # for accurate summary count
 
         # ---- LIKELY: ONE grouped bucket (right name, city not stated) ----
         if likely:

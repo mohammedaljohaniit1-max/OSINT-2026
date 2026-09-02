@@ -99,13 +99,21 @@ class PhoneIntel(Module):
         target.confidence = max(target.confidence, 0.85)
         target.tags.add("phone-parsed")
 
+        # NOTE: geo + carrier are FACTS ABOUT THE NUMBER, not assets owned by
+        # the person we're investigating. They must be recorded but NEVER
+        # expanded — otherwise the engine cascades the carrier's global corporate
+        # infrastructure (e.g. carrier "Lebara" -> mobile.lebara.com -> 100s of
+        # IPs/CIDRs/URLs in another country). That is pure contamination.
         if region:
             graph.add(EntityType.GEO, f"{region} ({region_code})", confidence=0.85,
-                      tags={"phone-geo"},
+                      tags={"phone-geo", "no-expand"},
                       evidence=ev("phone_intel", snippet=f"{e164} -> {region}"))
         if carr:
-            graph.add(EntityType.ORG, carr, confidence=0.8, tags={"carrier"},
-                      evidence=ev("phone_intel", snippet=f"{e164} carrier {carr}"))
+            graph.add(EntityType.ORG, carr, confidence=0.8,
+                      tags={"carrier", "no-expand", "phone-fact"},
+                      evidence=ev("phone_intel",
+                                  snippet=f"{e164} carrier {carr} "
+                                          f"(carrier name — not the subscriber)"))
 
         # feed the dork engine: normalize to searchable variants so the web
         # pivot (WhatsApp/Telegram/listings/leaks) actually runs on the number.
