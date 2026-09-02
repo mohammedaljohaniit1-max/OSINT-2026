@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Argus — Zero-API OSINT Engine :: One-Command Installer (Kali / Debian / Ubuntu)
+#  Argus — Evidence-first OSINT :: Reproducible Installer (Kali/Debian/Ubuntu)
 # =============================================================================
 #  Usage:
 #     git clone https://github.com/mohammedaljohaniit1-max/OSINT-2026.git
@@ -22,6 +22,15 @@ err(){ echo -e "  ${RED}[✗]${RST} $*"; }
 step(){ echo -e "\n${BLD}${CYN}══▶ $*${RST}"; }
 
 MINIMAL=0; UPDATE=0; WITH_SEARXNG=0; UNINSTALL=0
+
+# Reproducible defaults. Override deliberately, e.g. SUBFINDER_VERSION=v2.6.6.
+SUBFINDER_VERSION="${SUBFINDER_VERSION:-v2.6.6}"
+HTTPX_VERSION="${HTTPX_VERSION:-v1.6.10}"
+NAABU_VERSION="${NAABU_VERSION:-v2.3.1}"
+NUCLEI_VERSION="${NUCLEI_VERSION:-v3.3.5}"
+DNSX_VERSION="${DNSX_VERSION:-v1.2.1}"
+GAU_VERSION="${GAU_VERSION:-v2.2.4}"
+KATANA_VERSION="${KATANA_VERSION:-v1.1.2}"
 for a in "$@"; do
   case "$a" in
     --minimal) MINIMAL=1 ;;
@@ -48,10 +57,10 @@ if [ "$UNINSTALL" -eq 1 ]; then
   # 2) remove the pip entry point / editable install
   if [ -d ".venv" ]; then
     # shellcheck disable=SC1091
-    source .venv/bin/activate 2>/dev/null && pip uninstall -y argus >/dev/null 2>&1 || true
+    source .venv/bin/activate 2>/dev/null && pip uninstall -y argus-osint >/dev/null 2>&1 || true
     deactivate 2>/dev/null || true
   fi
-  pip uninstall -y argus >/dev/null 2>&1 || true
+  python3 -m pip uninstall -y argus-osint >/dev/null 2>&1 || true
   $SUDO rm -f /usr/local/bin/argus /usr/bin/argus 2>/dev/null || true
   # 3) delete the virtual environment
   rm -rf .venv && echo -e "  ${GRN}[✓]${RST} removed .venv"
@@ -96,9 +105,9 @@ step "2/7  Python virtual environment + core"
 python3 -m venv .venv 2>/dev/null || true
 # shellcheck disable=SC1091
 source .venv/bin/activate
-pip install --quiet --upgrade pip wheel setuptools
-pip install --quiet -r requirements.txt && ok "python core installed"
-pip install --quiet -e . 2>/dev/null && ok "argus CLI linked (entry point)" \
+python -m pip install --quiet --upgrade 'pip<26' 'wheel<1' 'setuptools<82'
+python -m pip install --quiet -r requirements.txt && ok "python core installed"
+python -m pip install --quiet -e . 2>/dev/null && ok "argus CLI linked (entry point)" \
   || warn "editable install skipped (use: python3 -m argus.cli)"
 
 if [ "$MINIMAL" -eq 1 ]; then
@@ -126,24 +135,21 @@ if command -v go >/dev/null 2>&1; then
   export GOBIN="$HOME/.local/bin"; mkdir -p "$GOBIN"
   export PATH="$PATH:$GOBIN"
   GO_TOOLS=(
-    "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
-    "github.com/projectdiscovery/httpx/cmd/httpx@latest"
-    "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
-    "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
-    "github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
-    "github.com/tomnomnom/assetfinder@latest"
-    "github.com/lc/gau/v2/cmd/gau@latest"
-    "github.com/projectdiscovery/katana/cmd/katana@latest"
+    "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDER_VERSION}"
+    "github.com/projectdiscovery/httpx/cmd/httpx@${HTTPX_VERSION}"
+    "github.com/projectdiscovery/naabu/v2/cmd/naabu@${NAABU_VERSION}"
+    "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@${NUCLEI_VERSION}"
+    "github.com/projectdiscovery/dnsx/cmd/dnsx@${DNSX_VERSION}"
+    "github.com/lc/gau/v2/cmd/gau@${GAU_VERSION}"
+    "github.com/projectdiscovery/katana/cmd/katana@${KATANA_VERSION}"
   )
   for g in "${GO_TOOLS[@]}"; do
     name="$(basename "${g%@*}")"
-    if command -v "$name" >/dev/null 2>&1; then ok "$name (present)"; continue; fi
+    if command -v "$name" >/dev/null 2>&1 && [ "$UPDATE" -eq 0 ]; then ok "$name (present)"; continue; fi
     info "go install $name …"
     if go install "$g" >/dev/null 2>&1; then ok "$name"; else warn "$name failed"; fi
   done
-  # add GOBIN to shell rc
-  grep -q '.local/bin' "$HOME/.bashrc" 2>/dev/null || \
-    echo 'export PATH="$PATH:$HOME/.local/bin"' >> "$HOME/.bashrc"
+  info "Go tools installed in $GOBIN; add it to PATH in your shell profile if needed"
 fi
 
 # --------------------------------------------------------------------------- #
@@ -151,20 +157,24 @@ step "5/7  pipx tools (holehe, etc.)"
 python3 -m pip install --quiet pipx 2>/dev/null || true
 python3 -m pipx ensurepath >/dev/null 2>&1 || true
 for p in holehe maigret; do
-  if command -v "$p" >/dev/null 2>&1; then ok "$p (present)"; else
-    pipx install "$p" >/dev/null 2>&1 && ok "$p (pipx)" || warn "$p pipx failed"
+  if command -v "$p" >/dev/null 2>&1 && [ "$UPDATE" -eq 0 ]; then ok "$p (present)"; else
+    pipx install --force "$p" >/dev/null 2>&1 && ok "$p (pipx; version recorded below)" || warn "$p pipx failed"
   fi
 done
 
 # --------------------------------------------------------------------------- #
-step "6/7  Secret scanners (trufflehog / gitleaks)"
-if ! command -v trufflehog >/dev/null 2>&1; then
-  curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
-    | $SUDO sh -s -- -b /usr/local/bin >/dev/null 2>&1 && ok "trufflehog" || warn "trufflehog manual"
-else ok "trufflehog (present)"; fi
-if ! command -v gitleaks >/dev/null 2>&1; then
-  $SUDO apt-get install -y -qq gitleaks >/dev/null 2>&1 && ok "gitleaks" || warn "gitleaks manual"
-else ok "gitleaks (present)"; fi
+step "6/7  Secret scanners (repository packages only)"
+# Never execute remote curl-to-shell installers. Distribution packages are used
+# when available; otherwise doctor reports the missing optional capability.
+for scanner in trufflehog gitleaks; do
+  if command -v "$scanner" >/dev/null 2>&1; then
+    ok "$scanner (present)"
+  elif $SUDO apt-get install -y -qq "$scanner" >/dev/null 2>&1; then
+    ok "$scanner (apt)"
+  else
+    warn "$scanner unavailable in configured repositories (skipped safely)"
+  fi
+done
 
 # --------------------------------------------------------------------------- #
 step "7/7  Optional local SearXNG (dorking without CAPTCHA)"
@@ -189,13 +199,36 @@ if command -v nuclei >/dev/null 2>&1; then
 fi
 
 # --------------------------------------------------------------------------- #
+# Reproducibility/coverage manifest: exact executable paths and self-reported
+# versions. Failures are data, not hidden installer success.
+mkdir -p reports
+MANIFEST="reports/tool_manifest_$(date -u +%F).tsv"
+{
+  printf 'tool\tpath\tversion\n'
+  for tool in python git go subfinder httpx naabu nuclei dnsx gau katana \
+              theHarvester holehe sherlock maigret whatweb trufflehog gitleaks \
+              nmap tor docker; do
+    path="$(command -v "$tool" 2>/dev/null || true)"
+    if [ -n "$path" ]; then
+      version="$($tool --version 2>&1 | head -n 1 || true)"
+      [ -n "$version" ] || version="$($tool -version 2>&1 | head -n 1 || true)"
+      printf '%s\t%s\t%s\n' "$tool" "$path" "${version//$'\t'/ }"
+    else
+      printf '%s\t%s\t%s\n' "$tool" 'UNAVAILABLE' 'UNAVAILABLE'
+    fi
+  done
+} > "$MANIFEST"
+ok "tool/version manifest written to $MANIFEST"
+
+# --------------------------------------------------------------------------- #
 echo -e "\n${BLD}${GRN}════════════════════════════════════════════════════════════${RST}"
 echo -e "${BLD}${GRN}  Argus installed.${RST}"
 echo -e "${BLD}${GRN}════════════════════════════════════════════════════════════${RST}"
 echo -e "  Activate env:   ${CYN}source .venv/bin/activate${RST}"
 echo -e "  Health check:   ${CYN}argus doctor${RST}   (or: python3 -m argus.cli doctor)"
 echo -e "  First scan:     ${CYN}argus scan example.com${RST}"
-  echo -e "  List modules:   ${CYN}argus modules${RST}"
-  echo -e "  Scan history:   ${CYN}argus history${RST}   (management commands)"
-  echo -e "  Uninstall:      ${CYN}./install.sh --uninstall${RST}"
-  echo -e "\n  ${YLW}Reminder:${RST} restart your shell or 'source ~/.bashrc' so new PATH tools load."
+echo -e "  List modules:   ${CYN}argus modules${RST}"
+echo -e "  Scan history:   ${CYN}argus history${RST}   (management commands)"
+echo -e "  Manifest:       ${CYN}$MANIFEST${RST}"
+echo -e "  Uninstall:      ${CYN}./install.sh --uninstall${RST}"
+echo -e "\n  ${YLW}Reminder:${RST} export PATH=\"\$PATH:\$HOME/.local/bin\" if Go/pipx tools are not visible."

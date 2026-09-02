@@ -12,7 +12,7 @@ This is where raw findings become *intelligence*.
 """
 from __future__ import annotations
 
-from .models import EntityType, IntelGraph, RiskLevel
+from .models import EntityType, FindingState, IntelGraph, RiskLevel
 
 
 RISK_RULES = {
@@ -81,10 +81,20 @@ def _cluster_owners(graph: IntelGraph):
 
 
 def _multi_source_boost(graph: IntelGraph):
+    """Calibrate by independent evidence families, never adapter name count.
+
+    This deliberately does not promote CANDIDATE to CONFIRMED.  Identity
+    confirmation requires a module to emit that state based on direct evidence.
+    """
     for e in graph.entities.values():
-        n = len(e.sources)
-        if n >= 3:
-            e.confidence = min(1.0, e.confidence + 0.2)
-            e.tags.add(f"corroborated-x{n}")
-        elif n == 2:
-            e.confidence = min(1.0, e.confidence + 0.1)
+        families = e.evidence_families()
+        n = len(families)
+        if n < 2:
+            continue
+        # A bounded calibration bump acknowledges corroboration while preventing
+        # Sherlock/Maigret/native wrappers of the same page from reaching 100%.
+        e.confidence = min(0.95, e.confidence + min(0.09, 0.03 * (n - 1)))
+        e.tags.add(f"independent-evidence-x{n}")
+        e.metadata["evidence_families"] = sorted(families)
+        if e.state == FindingState.UNKNOWN:
+            e.state = FindingState.CANDIDATE

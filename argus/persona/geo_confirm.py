@@ -126,24 +126,32 @@ class GeoConfirmer:
         links = links or []
         cs = ConfirmScore()
 
-        blob_name = " ".join([handle or "", display_name or ""])
-        blob_all = " ".join([handle or "", display_name or "", bio or "",
-                             location or "", " ".join(links)])
+        # Generated handles are discovery hypotheses, not independent name proof.
+        # Score fields the profile owner actually controls separately so a handle
+        # derived from the input cannot circularly confirm the same input.
+        blob_profile = " ".join([display_name or "", bio or ""])
+        blob_all = " ".join([display_name or "", bio or "", location or "",
+                             " ".join(links)])
 
         # ---- NAME (max 55) ----
-        hits_name_field = self._name_hits(blob_name)
+        display_hits = self._name_hits(display_name)
+        profile_hits = self._name_hits(blob_profile)
+        handle_hits = self._name_hits(handle)
         hits_anywhere = self._name_hits(blob_all)
-        if self._has_given_and_family(hits_name_field):
+        if self._has_given_and_family(display_hits):
             cs.name_score = 55
-            cs.reasons.append(f"full name matches (handle/display): {sorted(hits_name_field)}")
-        elif self._has_given_and_family(hits_anywhere):
+            cs.reasons.append(f"full name matches profile display name: {sorted(display_hits)}")
+        elif self._has_given_and_family(profile_hits):
             cs.name_score = 40
-            cs.reasons.append(f"full name matches (in bio): {sorted(hits_anywhere)}")
-        elif hits_name_field:
+            cs.reasons.append(f"full name appears in profile-authored bio: {sorted(profile_hits)}")
+        elif display_hits:
             cs.name_score = 18
-            cs.reasons.append(f"partial name match: {sorted(hits_name_field)}")
+            cs.reasons.append(f"partial display-name match: {sorted(display_hits)}")
+        elif handle_hits:
+            cs.name_score = 12
+            cs.reasons.append("generated/discovered handle resembles name (discovery signal only)")
         elif hits_anywhere:
-            cs.name_score = 10
+            cs.name_score = 8
             cs.reasons.append(f"weak name token: {sorted(hits_anywhere)}")
 
         # ---- GEO (max 35) ----

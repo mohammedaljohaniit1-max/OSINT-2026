@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛰️ Argus — OSINT-2026  ·  v2.0.0
+# 🛰️ Argus — OSINT-2026  ·  v2.1.0
 
 ```
     ___
@@ -12,26 +12,31 @@
         The hundred-eyed. It sees everything.
 ```
 
-**A professional, zero-API-key, deep-passive OSINT framework for Kali Linux.**
-Auto-detects the target, runs 50+ native modules & external-tool adapters with **no API keys**,
-correlates everything into one intelligence graph, and produces professional reports.
+**An evidence-aware, zero-mandatory-key OSINT orchestration framework for Kali Linux.**
+Argus auto-detects targets, runs native sources and optional external-tool adapters,
+records source coverage, and separates observed facts, inferred facts, candidates, and
+confirmed findings. Optional keys can improve coverage; no paid key is mandatory.
 
-*إطار احترافي لجمع المعلومات مفتوحة المصدر — بدون أي مفاتيح API، سلبي وعميق جداً، مع محرك بحث عن الأشخاص "Persona Hunter".*
+*منصة OSINT مبنية على الدليل ولا تتطلب مفتاح API مدفوعاً إلزامياً. تفصل بين المرشح والنتيجة المؤكدة وتعرض المصادر التي فشلت أو لم تتوفر.*
+
+> **Truth contract:** HTTP 200, a matching username, or the same name+city never proves
+> account ownership by itself. Reports explicitly label such output as `candidate`.
 
 </div>
 
 ---
 
-## 📌 What's new in v2.0.0 — الجديد في الإصدار الثاني
+## 📌 What's new in v2.1.0 — Evidence-first release
 
 | المزية · Feature | الوصف · Description |
 |---|---|
-| 🧭 **Persona Hunter** | ابحث عن **شخص** بالاسم + الدولة + المدينة بأي لغة (عربي/إنجليزي). يجد الحسابات في **المدينة المحددة فقط** ويضع **روابط الحسابات**. Search a **person** by name + country + city in any language and get **direct account links**, locked to that city only. |
-| 🌍 **Locale brain** | تحويل تلقائي عربي↔لاتيني للأسماء + قاموس مدن/دول (خليجي + عالمي) بكل التهجئات. Arabic↔Latin transliteration + a gazetteer of Gulf/world cities & countries with all spellings. |
-| 🎯 **Geo-Confirmation** | كل حساب يُقيّم 0–100 (اسم × مدينة × إشارات) مع سبب واضح وحكم. قاعدة صارمة: نفس الاسم في مدينة أخرى → **مرفوض**. Every account scored 0–100 with explainable reasons; same name in a *different* city → **REJECTED**. |
-| 🔗 **Cross-account fusion** | حسابات نفس الشخص (عربي + إنجليزي، معرّفات مختلفة) تُدمج في **شخصية واحدة**. Same person's accounts fuse into ONE persona. |
-| 🧹 **Lean results** | لا مزيد من "ملف عملاق بدون فائدة". النتائج مرتبة بطبقات: مؤكد / محتمل / ملخص. No more giant useless logs — tiered output: confirmed / likely / summary. |
-| 🛡️ **Scope Guard** | إصلاح تلوث الكيانات (كان ينتج 18,005 كياناً وهمياً). Eliminated the 15k+ fake-entity contamination. |
+| 🧭 **Persona Hunter** | يكتشف مرشحي الملفات العامة بالاسم والدولة والمدينة وبتهجئات عربية/لاتينية؛ لا يدّعي الملكية بلا دليل ربط مستقل. |
+| 🌍 **Locale normalization** | تحويلات عربية↔لاتينية وقاموس aliases للدول والمدن؛ التغطية معلنة وليست شاملة لكل لغات العالم. |
+| 🎯 **Explainable identity scoring** | يفصل وجود الصفحة عن تشابه الهوية وملكية الحساب، ويرفض تعارض المدينة المعروف. |
+| 🔗 **Conservative fusion** | الدمج يتطلب cross-link أو سيرة متطابقة قوية أو handle+مدينة؛ الاسم والمدينة وحدهما لا يكفيان. |
+| 🧹 **Truth states** | `observed`, `candidate`, `inferred`, `confirmed`, `rejected`, `unknown`, و`unavailable`. |
+| 🛡️ **False-positive controls** | Negative controls، soft-404/generic-shell detection، deduplication، واستقلال عائلات الأدلة. |
+| 📊 **Coverage ledger** | كل وحدة تسجل success/empty/partial/failed/timeout/unavailable/skipped ومدة التنفيذ. |
 
 ---
 
@@ -57,7 +62,7 @@ correlates everything into one intelligence graph, and produces professional rep
 ## 🧱 Requirements · المتطلبات
 - **Kali Linux** (or any Debian/Ubuntu). Also works on macOS/WSL.
 - **Python 3.9+** (3.11+ recommended).
-- `git`, `pip`. External OSINT tools are **optional** — Argus works fully without them (native modules cover the same ground).
+- `git`, `pip`. External tools are optional, but each missing tool reduces coverage and is shown as `unavailable`; native modules do not claim perfect replacement coverage.
 
 ---
 
@@ -119,15 +124,15 @@ argus scan <target> [--profile deep|standard|quick|stealth] [--active]
 | 4 | `argus scan 0576365924` | Phone (Saudi local number) |
 | 5 | `argus scan "فراس الحربي" --country "Saudi Arabia" --city "Al Madinah Al Munawwarah"` | **Person → Persona Hunter** |
 
-> Default profile is **`deep`** = maximum *passive* depth. Active probing is **never** done unless you pass `--active`.
+> Default profile is **`deep`** = maximum *passive* depth. Active probing is **never** done unless you pass `--active`. Use repeatable `--include-module NAME` or `--exclude-module NAME` flags for auditable module selection. Local phone numbers require `--phone-region`, for example `--phone-region SA`.
 
 ---
 
 ## 🧭 Persona Hunter · البحث عن شخص
 
-Search for a **person** by **name + country + city**, in **any language**. Argus finds every account that carries that name **and belongs to the specified city only** — and prints the **links** to those accounts.
+Search for a **person** by **name + country + city** across Arabic and Latin variants. Argus discovers public profile candidates, rejects known city conflicts, and prints auditable links. It does **not** claim that every account is discoverable or owned by the target without independent linking evidence.
 
-> مثال: ابحث عن `فراس الحربي` في **المدينة المنورة**. لو وُجد "فراس الحربي" في **الرياض** → لا يظهر. ولو كتب اسمه بالإنجليزية "Firas Al-Harbi" → يظهر ويُدمج مع حسابه العربي في **شخصية واحدة**.
+> مثال: عند البحث عن `فراس الحربي` في **المدينة المنورة**، يُرفض الملف الذي يصرّح بمدينة متعارضة مثل الرياض. التهجئة `Firas Al-Harbi` توسّع الاكتشاف فقط، ولا تُدمج الحسابات إلا عند وجود إشارة ربط قوية.
 
 ### Usage · الاستخدام
 ```bash
@@ -149,9 +154,9 @@ Results are **tiered** so you never get a useless dump:
 
 | Tier · الطبقة | Meaning · المعنى | Output |
 |---|---|---|
-| ✅ **CONFIRMED** | الاسم + المدينة المحددة مؤكدان | Fused persona(s), **full detail + links** |
-| 🟡 **LIKELY** | نفس الاسم لكن المدينة غير مذكورة | ONE grouped bucket (top matches) |
-| ⚪ **SUMMARY** | أسماء ضعيفة / **مدينة خاطئة** | عدد فقط + أمثلة قليلة للتدقيق |
+| ✅ **CONFIRMED** | أدلة ربط قوية ومستقلة بين الحسابات | Fused identity with explicit fusion signals |
+| 🟡 **CANDIDATE** | تطابق اسم/مدينة أو اسم بلا دليل ملكية كافٍ | Separate candidate cluster; never silently merged |
+| ⚪ **FILTERED** | صفحة عامة/404 ناعم/مدينة خاطئة/تحكم سلبي فاشل | Count and audit examples only |
 
 Each account row carries: **platform · link · handle · display name · location · score · why (reasons)**.
 
@@ -178,6 +183,7 @@ argus diff <target>           # diff two most recent scans of a target
 argus clean -k 5              # prune stored scans, keep newest 5
 argus doctor                  # environment health check
 argus modules                 # list all loaded modules
+argus benchmark               # offline false-positive/identity release gates
 ```
 
 ---
@@ -210,7 +216,7 @@ Everything shares a **unified data model**: `Entity`, `Relationship`, `Evidence`
 | `breaches` / `breach_correlation` | source/native | EMAIL → breach findings | |
 | `email_enrich` / `email_permutator` | source/native | EMAIL/PERSON → emails | |
 | `username` | source | USERNAME → SOCIAL_PROFILE | |
-| `phone` | source | PHONE → carrier/region/dorks | handles `0576365924` as Saudi |
+| `phone` | source | PHONE → allocation metadata/region | local numbers require `--phone-region`; carrier may be stale after portability |
 | `github_dork` / `js_recon` | source/native | DOMAIN → leaks/endpoints | |
 | `typosquat` / `favicon_pivot` / `tracker_pivot` / `asn_sweep` / `bucket_hunter` | native | pivots | genius correlation |
 
@@ -238,7 +244,7 @@ raw name (any language)
 │  (ranked real handles) │  alharbi.firas, +year suffixes…
 └──────────┬─────────────┘
            ▼
-┌───────────────────────┐   probe 18 platforms (passive)
+┌───────────────────────┐   probe curated platforms (passive)
 │  Profile extractor     │   OpenGraph / Twitter meta /
 │  display,bio,loc,lang  │   JSON-LD Person / <html lang>
 └──────────┬─────────────┘
@@ -248,18 +254,18 @@ raw name (any language)
 │  verdict + reasons     │            → REJECTED
 └──────────┬─────────────┘
            ▼
-┌───────────────────────┐   union-find: cross-link / same bio /
-│  Cross-account fusion  │   (confirmed + same gazetteer city +
-│  → ONE persona         │    shared handle stem)
+┌───────────────────────┐   conservative fusion: cross-link /
+│  Cross-account fusion  │   strong shared biography /
+│  with reason ledger    │   same handle + declared same city
 └──────────┬─────────────┘
            ▼
-┌───────────────────────┐   CONFIRMED → full detail + links
-│  Lean tiered emission  │   LIKELY    → one bucket
-│                        │   POSSIBLE/REJECTED → count summary
+┌───────────────────────┐   CONFIRMED → strong linking evidence
+│  Truth-state emission  │   CANDIDATE → separate clusters
+│                        │   FILTERED → count + audit reason
 └───────────────────────┘
 ```
 
-**Platforms probed (18):** GitHub, GitLab, Instagram, TikTok, YouTube, Twitter/X, Reddit, Telegram, Pinterest, Medium, Behance, SoundCloud, About.me, Gravatar, Keybase, Linktree, Snapchat, Threads.
+**Curated validators currently included:** GitHub, GitLab, Reddit, Telegram, Keybase, Dev.to, Medium, About.me, Gravatar, PyPI, npm, Docker Hub, Hacker News, CodePen, Replit, and Chess.com. A platform is added only with explicit presence/absence signals and a negative-control strategy.
 
 ---
 
@@ -280,7 +286,7 @@ OSINT-2026/
 ├── argus.py                 # standalone launcher
 ├── install.sh               # installer (--minimal/--update/--uninstall)
 ├── requirements.txt
-├── setup.py                 # v2.0.0, `argus` entry point
+├── setup.py                 # package metadata + `argus` entry point
 ├── config.yaml
 ├── argus/
 │   ├── __init__.py          # version + banner
@@ -318,24 +324,32 @@ OSINT-2026/
 2. Give it a `spec = ModuleSpec(name=…, accepts={…}, produces={…}, priority=…, tags={…})`.
 3. That's it — the **Registry auto-discovers it**. No wiring needed.
 
-**Add a platform to Persona Hunter:** append one line to `PLATFORMS` in `argus/persona/investigator.py`.
-**Add a city/country/name spelling:** extend the dicts in `argus/persona/locale.py` (`CITIES`, `COUNTRIES`, `CANON_NAME_MAP`).
-**Tune result volume:** `MAX_LIKELY_ACCOUNTS` / `MAX_REJECTED_EXAMPLES` / `MAX_HANDLES` in `investigator.py`.
+**Add a platform safely:** add a `SiteCheck` in `argus/sources/username.py` with platform-specific presence, absence, shell, and username-binding rules, then add positive and negative fixtures. Generic HTTP 200 checks are not accepted.
+**Add a city/country/name spelling:** extend the normalized aliases in `argus/persona/locale.py` and add multilingual tests.
+**Tune result volume:** use scan profiles and budgets; never raise confidence merely to reduce output volume.
 
 ---
 
 ## ✅ Tests · الاختبارات
 
 ```bash
-# persona unit + e2e (28 assertions across 7 tests)
-python3 -m pytest tests/test_persona.py -q
+# full deterministic suite
+python3 -m pytest -q
 
-# scope-guard, truth-guards, pipeline (standalone scripts)
-python3 tests/test_scope_guard.py
-python3 tests/test_truthguards.py
-python3 tests/test_pipeline.py
+# syntax/import validation
+python3 -m compileall -q argus tests
 ```
-All green: **28 persona + 11 scope-guard + 8 truth-guard + pipeline**.
+The evidence-first suite includes regression gates for generic HTTP 200 pages, negative controls, confidence-family independence, serialization, scope guards, and persona fusion.
+
+Run the reproducible offline acceptance benchmark:
+
+```bash
+argus benchmark
+argus benchmark --json-out reports/benchmark_2026-09-02.json
+argus benchmark --dataset /path/to/labeled-corpus.json --min-precision 0.98 --max-fpr 0.01
+```
+
+The bundled corpus is a deterministic regression gate, **not** proof of real-world superiority. A public comparison claim requires a larger independently labelled corpus, identical target sets and time budgets, and published tool/version manifests.
 
 ---
 
@@ -349,6 +363,6 @@ Argus performs **passive** OSINT on **publicly available** information only. Act
 
 <div align="center">
 
-**Argus — OSINT-2026 · v2.0.0 · The hundred-eyed. It sees everything.**
+**Argus — OSINT-2026 · v2.1.0 · Evidence before claims.**
 
 </div>

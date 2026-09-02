@@ -14,7 +14,7 @@ Never returns an empty scan silently - it always records what it could parse.
 """
 from __future__ import annotations
 
-from ..core.models import EntityType, IntelGraph
+from ..core.models import EntityType, FindingState, IntelGraph, RiskLevel
 from ..core.module import Module, ModuleSpec
 from ._base import ev
 
@@ -57,9 +57,13 @@ class PhoneIntel(Module):
         except Exception:
             pass
 
-        # 2) local-number fallback: try likely regions
+        # 2) local-number fallback: explicit operator context first. Guessing a
+        # country is otherwise ambiguous, so the assumption is exposed in report.
         if num is None:
-            for region in DEFAULT_REGIONS:
+            preferred = (getattr(self.ctx.config, "phone_region", "") or "").upper()
+            regions = ([preferred] if preferred else []) + [
+                r for r in DEFAULT_REGIONS if r != preferred]
+            for region in regions:
                 try:
                     cand = phonenumbers.parse(raw, region)
                     if phonenumbers.is_valid_number(cand):
@@ -92,6 +96,8 @@ class PhoneIntel(Module):
             "region_code": region_code,
             "geographic_area": region,
             "carrier": carr,
+            "carrier_caveat": ("libphonenumber allocation metadata; number portability "
+                                "means this may not be the current operator"),
             "timezones": tzs,
             "line_type": ltype,
             "assumed_region": used_region,
@@ -105,15 +111,20 @@ class PhoneIntel(Module):
         # infrastructure (e.g. carrier "Lebara" -> mobile.lebara.com -> 100s of
         # IPs/CIDRs/URLs in another country). That is pure contamination.
         if region:
-            graph.add(EntityType.GEO, f"{region} ({region_code})", confidence=0.85,
+            graph.add(EntityType.GEO, f"{region} ({region_code})", confidence=0.78,
+                      risk=RiskLevel.INFO, state=FindingState.INFERRED,
                       tags={"phone-geo", "no-expand"},
                       evidence=ev("phone_intel", snippet=f"{e164} -> {region}"))
         if carr:
-            graph.add(EntityType.ORG, carr, confidence=0.8,
-                      tags={"carrier", "no-expand", "phone-fact"},
+            graph.add(EntityType.ORG, carr, confidence=0.55,
+                      risk=RiskLevel.INFO, state=FindingState.INFERRED,
+                      tags={"carrier", "no-expand", "phone-fact", "allocation-metadata"},
                       evidence=ev("phone_intel",
-                                  snippet=f"{e164} carrier {carr} "
-                                          f"(carrier name — not the subscriber)"))
+                                  snippet=f"{e164} allocation carrier {carr}; "
+                                          f"may differ after number portability",
+                                  source_family="libphonenumber",
+                                  independence_key="libphonenumber-allocation",
+                                  method="offline-allocation-lookup", reliability=0.55))
 
         # feed the dork engine: normalize to searchable variants so the web
         # pivot (WhatsApp/Telegram/listings/leaks) actually runs on the number.

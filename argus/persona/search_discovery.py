@@ -122,6 +122,31 @@ def _name_phrases(name) -> list[str]:
     return _uniq([p for p in out if len(p) >= 3])[:12]
 
 
+def diverse_sample(queries: list[str], limit: int) -> list[str]:
+    """Round-robin queries across sites and scripts instead of prefix slicing."""
+    if len(queries) <= limit:
+        return list(queries)
+    buckets: dict[str, list[str]] = {}
+    for query in queries:
+        site = "open-web"
+        match = re.search(r"site:([^\s]+)", query)
+        if match:
+            site = match.group(1).lower()
+        script = "arabic" if L.has_arabic(query) else "latin"
+        buckets.setdefault(f"{site}:{script}", []).append(query)
+    selected: list[str] = []
+    keys = list(buckets)
+    while len(selected) < limit and keys:
+        next_keys = []
+        for key in keys:
+            if buckets[key] and len(selected) < limit:
+                selected.append(buckets[key].pop(0))
+            if buckets[key]:
+                next_keys.append(key)
+        keys = next_keys
+    return selected
+
+
 def extract_profiles(results: list[dict]) -> list[dict]:
     """Turn raw search results into [{platform, url, handle, title}] rows."""
     found = []

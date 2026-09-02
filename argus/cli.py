@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import shutil
 import sys
 
@@ -38,6 +39,18 @@ def cmd_scan(args):
         cfg.verify_smtp = True
     if args.searxng:
         cfg.searxng_url = args.searxng
+    if args.insecure:
+        cfg.verify_tls = False
+    if args.budget:
+        cfg.scan_budget = args.budget
+    if args.phone_region:
+        cfg.phone_region = args.phone_region.upper()
+    if args.output_dir:
+        cfg.output_dir = args.output_dir
+    if args.include_module:
+        cfg.include_modules = set(args.include_module)
+    if args.exclude_module:
+        cfg.exclude_modules = set(args.exclude_module)
     # ── Persona Hunter context (person search locked to a country + city) ──
     if getattr(args, "name", None):
         cfg.person_name = args.name
@@ -55,7 +68,8 @@ def cmd_scan(args):
     print(_c(f"[Argus] Target: {det.value}  →  {det.type.value} "
              f"({det.confidence:.0%})", "c"))
     print(_c(f"[Argus] Profile: {cfg.profile} | active={cfg.active_scan} "
-             f"| tor={cfg.use_tor}\n", "c"))
+             f"| tor={cfg.use_tor} | tls_verify={cfg.verify_tls} "
+             f"| budget={cfg.scan_budget or 'profile-default'}s\n", "c"))
 
     engine = Engine(cfg, quiet=args.quiet)
     graph = asyncio.run(engine.scan(args.target))
@@ -106,7 +120,7 @@ def cmd_doctor(args):
     tools = ["subfinder", "amass", "assetfinder", "findomain", "theHarvester",
              "holehe", "sherlock", "maigret", "httpx", "naabu", "nuclei",
              "whatweb", "gau", "trufflehog", "gitleaks", "tor", "nmap"]
-    print(_c("\nExternal tools (optional — native modules cover gaps):", "b"))
+    print(_c("\nExternal tools (optional — missing tools reduce declared coverage):", "b"))
     have = 0
     for t in tools:
         if shutil.which(t):
@@ -151,7 +165,41 @@ def cmd_modules(args):
 
 
 def cmd_update(args):
-    print(_c("Run install.sh --update to refresh external tools & wordlists.", "y"))
+    print(_c("Run install.sh --update to reinstall the pinned external toolchain.", "y"))
+
+
+def cmd_benchmark(args):
+    """Run deterministic false-positive and identity-fusion release gates."""
+    from pathlib import Path
+    from .benchmark import load_cases, run_benchmark
+
+    cases = load_cases(args.dataset)
+    result = run_benchmark(
+        cases,
+        min_precision=args.min_precision,
+        max_false_positive_rate=args.max_fpr,
+    )
+    payload = result.to_dict()
+    print(_c("\nArgus evidence benchmark", "c"))
+    print(f"  cases:               {result.passed}/{result.total} passed")
+    print(f"  precision:           {result.precision:.2%}")
+    print(f"  recall:              {result.recall:.2%}")
+    print(f"  F1:                  {result.f1:.2%}")
+    print(f"  false-positive rate: {result.false_positive_rate:.2%}")
+    print(f"  false-merge rate:    {result.false_merge_rate:.2%}")
+    print(f"  false-split rate:    {result.false_split_rate:.2%}")
+    print(_c(f"  release gate:        {'PASS' if result.gate_passed else 'FAIL'}",
+             "g" if result.gate_passed else "r"))
+    if result.failures:
+        for failure in result.failures:
+            print(_c(f"    FAIL {failure['id']}: {failure['actual']}", "r"))
+    if args.json_out:
+        path = Path(args.json_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"  JSON: {path}")
+    if not result.gate_passed:
+        raise SystemExit(2)
 
 
 # --------------------------------------------------------------------------- #
@@ -281,13 +329,30 @@ def build_parser():
     s.add_argument("--lang", help="restrict languages, comma-sep (default: auto ar+en+all)")
     s.add_argument("--smtp", action="store_true", help="SMTP email verification")
     s.add_argument("--searxng", help="SearXNG base URL")
+    s.add_argument("--phone-region", help="ISO region for local phone numbers, e.g. SA")
+    s.add_argument("--budget", type=int, help="total scan budget in seconds")
+    s.add_argument("--insecure", action="store_true",
+                   help="disable TLS verification (isolated labs only; recorded in report)")
+    s.add_argument("--output-dir", help="report/database output directory")
+    s.add_argument("--include-module", action="append", default=[], metavar="NAME",
+                   help="run only named module(s); repeatable")
+    s.add_argument("--exclude-module", action="append", default=[], metavar="NAME",
+                   help="skip named module(s); repeatable")
     s.add_argument("--config", default="config.yaml")
     s.add_argument("-q", "--quiet", action="store_true")
     s.set_defaults(func=cmd_scan)
 
     sub.add_parser("doctor", help="health check").set_defaults(func=cmd_doctor)
     sub.add_parser("modules", help="list modules").set_defaults(func=cmd_modules)
-    sub.add_parser("update", help="update tools").set_defaults(func=cmd_update)
+    sub.add_parser("update", help="update pinned tools").set_defaults(func=cmd_update)
+
+    b = sub.add_parser("benchmark", help="run deterministic truth-quality gates")
+    b.add_argument("--dataset", help="optional JSON benchmark corpus")
+    b.add_argument("--json-out", help="write machine-readable benchmark result")
+    b.add_argument("--min-precision", type=float, default=0.98)
+    b.add_argument("--max-fpr", type=float, default=0.01,
+                   help="maximum false-positive rate (default: 0.01)")
+    b.set_defaults(func=cmd_benchmark)
 
     # ---------------- management commands (سكربتات الإدارة) ---------------- #
     h = sub.add_parser("history", help="list stored scans")

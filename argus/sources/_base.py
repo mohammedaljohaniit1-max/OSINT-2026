@@ -10,7 +10,13 @@ RE_SUBDOMAIN = re.compile(r"(?:[A-Za-z0-9_\-]+\.)+[A-Za-z]{2,}")
 
 
 def ev(source, url="", snippet="", **raw):
-    return Evidence(source=source, url=url, snippet=snippet, raw=raw)
+    """Build evidence while keeping provenance fields out of opaque raw data."""
+    provenance = {
+        key: raw.pop(key) for key in (
+            "source_family", "independence_key", "method", "reliability"
+        ) if key in raw
+    }
+    return Evidence(source=source, url=url, snippet=snippet, raw=raw, **provenance)
 
 
 def extract_emails(text: str, domain: str | None = None) -> set[str]:

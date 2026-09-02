@@ -69,6 +69,30 @@ class RiskLevel(str, Enum):
         return {"critical": 100, "high": 75, "medium": 50, "low": 25, "info": 5}[self.value]
 
 
+class FindingState(str, Enum):
+    """Epistemic state of a finding, deliberately separate from risk.
+
+    A URL that returned HTTP 200 may be OBSERVED, while ownership by the target
+    remains only a CANDIDATE.  CONFIRMED is reserved for direct or independently
+    corroborated evidence.  UNKNOWN/UNAVAILABLE are never reported as hits.
+    """
+
+    OBSERVED = "observed"
+    CANDIDATE = "candidate"
+    INFERRED = "inferred"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
+    UNAVAILABLE = "unavailable"
+
+    @property
+    def rank(self) -> int:
+        return {
+            "unavailable": 0, "unknown": 1, "rejected": 1,
+            "candidate": 2, "inferred": 3, "observed": 4, "confirmed": 5,
+        }[self.value]
+
+
 # --------------------------------------------------------------------------- #
 #  Evidence
 # --------------------------------------------------------------------------- #
@@ -79,6 +103,17 @@ class Evidence:
     snippet: str = ""                  # raw proof text
     timestamp: float = field(default_factory=time.time)
     raw: dict[str, Any] = field(default_factory=dict)
+    source_family: str = ""            # independent provider/tool family
+    independence_key: str = ""         # same key means correlated evidence
+    method: str = "observation"         # observation/search/inference/derivation
+    reliability: float = 0.5            # quality of this evidence, not entity risk
+
+    def __post_init__(self):
+        if not self.source_family:
+            self.source_family = self.source
+        if not self.independence_key:
+            self.independence_key = self.source_family
+        self.reliability = max(0.0, min(1.0, float(self.reliability)))
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -91,8 +126,9 @@ class Evidence:
 class Entity:
     type: EntityType
     value: str
-    confidence: float = 0.5            # 0..1
+    confidence: float = 0.5            # 0..1 identity/fact confidence
     risk: RiskLevel = RiskLevel.INFO
+    state: FindingState = FindingState.OBSERVED
     sources: set[str] = field(default_factory=set)
     tags: set[str] = field(default_factory=set)
     evidence: list[Evidence] = field(default_factory=list)
@@ -106,6 +142,12 @@ class Entity:
             self.type = EntityType(self.type)
         if isinstance(self.risk, str):
             self.risk = RiskLevel(self.risk)
+        if isinstance(self.state, str):
+            try:
+                self.state = FindingState(self.state)
+            except ValueError:
+                self.state = FindingState.UNKNOWN
+        self.confidence = max(0.0, min(1.0, float(self.confidence)))
         # normalize value
         self.value = str(self.value).strip()
         if self.type in (EntityType.DOMAIN, EntityType.SUBDOMAIN, EntityType.EMAIL):
@@ -119,22 +161,41 @@ class Entity:
         return hashlib.sha1(key.encode()).hexdigest()[:16]
 
     def add_evidence(self, ev: Evidence):
-        self.evidence.append(ev)
+        # Deduplicate retries of exactly the same observation.  Repeated output
+        # from Sherlock + a wrapper around Sherlock is not independent proof.
+        sig = (ev.source, ev.url, ev.snippet, ev.independence_key)
+        if not any((x.source, x.url, x.snippet, x.independence_key) == sig
+                   for x in self.evidence):
+            self.evidence.append(ev)
         self.sources.add(ev.source)
         self.last_seen = time.time()
 
+    def evidence_families(self) -> set[str]:
+        return {e.independence_key or e.source_family or e.source
+                for e in self.evidence if e.source}
+
     def merge(self, other: "Entity"):
-        """Merge a duplicate entity into this one (correlation)."""
+        """Merge duplicates without pretending correlated sources are independent."""
+        before_families = self.evidence_families()
         self.sources |= other.sources
         self.tags |= other.tags
-        self.evidence.extend(other.evidence)
+        for evidence in other.evidence:
+            self.add_evidence(evidence)
         self.first_seen = min(self.first_seen, other.first_seen)
         self.last_seen = max(self.last_seen, other.last_seen)
-        # keep highest risk
         if other.risk.score > self.risk.score:
             self.risk = other.risk
-        # confidence grows with corroboration (bayesian-ish bump)
-        self.confidence = 1 - (1 - self.confidence) * (1 - other.confidence)
+        # Never use the old Bayesian formula: it drove repeated guesses to 1.0.
+        # Keep the strongest claim; one modest bump is allowed only when a truly
+        # new evidence family was added. Confirmation itself remains explicit.
+        merged_families = self.evidence_families()
+        independent_added = bool(merged_families - before_families)
+        strongest = max(self.confidence, other.confidence)
+        if independent_added and len(merged_families) >= 2:
+            strongest = min(0.95, strongest + min(0.10, 0.03 * (len(merged_families) - 1)))
+        self.confidence = strongest
+        if other.state.rank > self.state.rank and other.state != FindingState.REJECTED:
+            self.state = other.state
         for k, v in other.metadata.items():
             self.metadata.setdefault(k, v)
 
@@ -142,7 +203,9 @@ class Entity:
         d = asdict(self)
         d["type"] = self.type.value
         d["risk"] = self.risk.value
+        d["state"] = self.state.value
         d["sources"] = sorted(self.sources)
+        d["evidence_families"] = sorted(self.evidence_families())
         d["tags"] = sorted(self.tags)
         d["evidence"] = [e.to_dict() for e in self.evidence]
         return d
@@ -229,13 +292,16 @@ class IntelGraph:
         for e in self.entities.values():
             by_type[e.type.value] = by_type.get(e.type.value, 0) + 1
         by_risk: dict[str, int] = {}
+        by_state: dict[str, int] = {}
         for e in self.entities.values():
             by_risk[e.risk.value] = by_risk.get(e.risk.value, 0) + 1
+            by_state[e.state.value] = by_state.get(e.state.value, 0) + 1
         return {
             "total_entities": len(self.entities),
             "total_relationships": len(self.relationships),
             "by_type": by_type,
             "by_risk": by_risk,
+            "by_state": by_state,
         }
 
     def to_dict(self) -> dict:
@@ -258,9 +324,12 @@ class IntelGraph:
                 type=ed["type"], value=ed["value"],
                 confidence=ed.get("confidence", 0.5),
                 risk=ed.get("risk", "info"),
+                state=ed.get("state", "observed"),
                 sources=set(ed.get("sources", [])),
                 tags=set(ed.get("tags", [])),
                 metadata=ed.get("metadata", {}),
+                first_seen=ed.get("first_seen", time.time()),
+                last_seen=ed.get("last_seen", time.time()),
                 id=ed.get("id", ""),
             )
             e.evidence = evs

@@ -64,5 +64,8 @@ g3.add(EntityType.EMAIL, "a@b.com")  # duplicate -> merge, must NOT recount
 g3.add(EntityType.DOMAIN, "b.com")
 check("counter counts only genuinely NEW entities (2, not 3)", g3._new_count == 2)
 
-print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
-sys.exit(1 if FAIL else 0)
+if __name__ == "__main__":
+    print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
+    sys.exit(1 if FAIL else 0)
+else:
+    assert not FAIL, "; ".join(FAIL)

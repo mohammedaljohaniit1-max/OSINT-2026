@@ -27,6 +27,14 @@ class ModuleSpec:
     description: str = ""
     priority: int = 50                         # lower runs earlier
     tags: set[str] = field(default_factory=set)
+    source_family: str = ""                    # shared backend/tool lineage
+    timeout: int | None = None                 # explicit runtime ceiling
+    reliability: float = 0.5                   # baseline source quality
+
+    def __post_init__(self):
+        if not self.source_family:
+            self.source_family = self.external_bin or self.name
+        self.reliability = max(0.0, min(1.0, float(self.reliability)))
 
 
 class Module(abc.ABC):
