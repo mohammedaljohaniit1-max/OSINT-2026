@@ -10,12 +10,23 @@ Dork packs are tuned per target type (domain/email/person/username).
 """
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 import urllib.parse
 
 from ..core.models import EntityType, IntelGraph, RiskLevel
 from ..core.module import Module, ModuleSpec
 from ._base import ev, extract_emails
+
+# INTERNAL deadline (seconds) so the module always finishes BEFORE the engine's
+# 60s hard kill and emits whatever it gathered. Firing every dork serially with
+# an await (each blocking on a dead SearXNG socket + DDG) was exactly why the
+# operator's phone/email scans hit 'dork_engine timed out (60s)' and lost the
+# entire wave. Now: bounded concurrency + a wall-clock budget + partial emit.
+_DORK_BUDGET = 40.0
+_DORK_CONCURRENCY = 8
+_PER_SEARCH_TIMEOUT = 7.0
 
 # ---- curated dork packs ---------------------------------------------------- #
 DOMAIN_DORKS = [
@@ -85,42 +96,68 @@ class DorkEngine(Module):
         if target.type == EntityType.PHONE:
             subjects = target.metadata.get("search_variants", [target.value])[:3]
 
-        emitted_any = False
-        for subj in subjects:
-            for tmpl in pack:
-                dork = tmpl.format(t=subj)
-                hits = await self._search(dork)
-                for h in hits[:6]:
-                    url = (h.get("url") or "").strip()
-                    # TRUTH GUARD: only emit REAL result URLs, never the dork
-                    # template itself, never empty, never a search-engine page.
-                    if not url.startswith("http"):
-                        continue
-                    if self._is_search_engine_url(url):
-                        continue
-                    title = (h.get("title") or "").strip()
-                    content = h.get("content") or ""
-                    low = (url + " " + title + " " + content).lower()
-                    # relevance guard: for quoted-term dorks the subject should
-                    # plausibly relate; keep DORK_HIT but tag sensitivity.
-                    risk = RiskLevel.INFO
-                    if any(k in low for k in ("password", ".env", ".sql", "secret",
-                                              "confidential", "index of", "backup",
-                                              "leak", "dump")):
-                        risk = RiskLevel.MEDIUM
-                    emitted_any = True
-                    graph.add(EntityType.DORK_HIT, url[:250], risk=risk,
-                              confidence=0.5, tags={"dork", "web-result"},
-                              metadata={"dork": dork, "title": title[:120]},
-                              evidence=ev("dork_engine", url,
-                                          f"web result for dork: {dork}"))
-                    for em in extract_emails(content):
-                        if not target.type == EntityType.EMAIL or em != target.value:
-                            graph.add(EntityType.EMAIL, em, confidence=0.45,
-                                      tags={"from-dork"},
-                                      evidence=ev("dork_engine", url,
-                                                  "email in search snippet"))
-        if not emitted_any:
+        dorks = [tmpl.format(t=subj) for subj in subjects for tmpl in pack]
+        deadline = time.monotonic() + _DORK_BUDGET
+        sem = asyncio.Semaphore(_DORK_CONCURRENCY)
+        seen_urls: set[str] = set()
+        emitted = {"n": 0}
+
+        def _emit_hits(dork, hits):
+            for h in hits[:6]:
+                url = (h.get("url") or "").strip()
+                # TRUTH GUARD: only emit REAL result URLs, never the dork
+                # template itself, never empty, never a search-engine page.
+                if not url.startswith("http"):
+                    continue
+                if self._is_search_engine_url(url):
+                    continue
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                title = (h.get("title") or "").strip()
+                content = h.get("content") or ""
+                low = (url + " " + title + " " + content).lower()
+                risk = RiskLevel.INFO
+                if any(k in low for k in ("password", ".env", ".sql", "secret",
+                                          "confidential", "index of", "backup",
+                                          "leak", "dump")):
+                    risk = RiskLevel.MEDIUM
+                emitted["n"] += 1
+                graph.add(EntityType.DORK_HIT, url[:250], risk=risk,
+                          confidence=0.5, tags={"dork", "web-result"},
+                          metadata={"dork": dork, "title": title[:120]},
+                          evidence=ev("dork_engine", url,
+                                      f"web result for dork: {dork}"))
+                for em in extract_emails(content):
+                    if not target.type == EntityType.EMAIL or em != target.value:
+                        graph.add(EntityType.EMAIL, em, confidence=0.45,
+                                  tags={"from-dork"},
+                                  evidence=ev("dork_engine", url,
+                                              "email in search snippet"))
+
+        async def one(dork):
+            if time.monotonic() >= deadline:
+                return
+            async with sem:
+                if time.monotonic() >= deadline:
+                    return
+                try:
+                    hits = await asyncio.wait_for(self._search(dork),
+                                                  timeout=_PER_SEARCH_TIMEOUT)
+                except (asyncio.TimeoutError, Exception):
+                    return
+                if hits:
+                    _emit_hits(dork, hits)
+
+        tasks = [asyncio.create_task(one(d)) for d in dorks]
+        remaining = max(1.0, deadline - time.monotonic())
+        done, pending = await asyncio.wait(tasks, timeout=remaining)
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if not emitted["n"]:
             # be honest in the report about why nothing came back
             target.metadata.setdefault("dork_note",
                 "No web results (SearXNG not running -> DuckDuckGo fallback may be "
@@ -134,13 +171,22 @@ class DorkEngine(Module):
         return any(b in url.lower() for b in bad)
 
     async def _search(self, query: str) -> list[dict]:
-        # 1) local SearXNG (preferred)
-        sx = self.ctx.config.searxng_url.rstrip("/")
-        url = f"{sx}/search"
-        data = await self.ctx.http.get(
-            url, params={"q": query, "format": "json"}, expect="json")
-        if isinstance(data, dict) and data.get("results"):
-            return data["results"]
+        # 1) local SearXNG (preferred) — but if it's down, a CIRCUIT BREAKER
+        #    stops every subsequent dork from wasting its budget on the dead
+        #    socket (the root cause of the 60s wave kill on the operator's run).
+        sx = (self.ctx.config.searxng_url or "").rstrip("/")
+        if sx and not getattr(self, "_searxng_dead", False):
+            try:
+                data = await asyncio.wait_for(
+                    self.ctx.http.get(f"{sx}/search",
+                                      params={"q": query, "format": "json"},
+                                      expect="json"),
+                    timeout=3.0)
+                if isinstance(data, dict) and data.get("results"):
+                    return data["results"]
+                # reachable but empty → not dead, just fall through to DDG
+            except (asyncio.TimeoutError, Exception):
+                self._searxng_dead = True   # trip the breaker for this run
         # 2) fallback: DuckDuckGo HTML
         return await self._ddg(query)
 
