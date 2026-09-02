@@ -22,8 +22,9 @@ class Registry:
         import argus.sources
         import argus.adapters
         import argus.native
+        import argus.persona
 
-        for pkg in (argus.sources, argus.adapters, argus.native):
+        for pkg in (argus.sources, argus.adapters, argus.native, argus.persona):
             for _, modname, _ in pkgutil.iter_modules(pkg.__path__):
                 full = f"{pkg.__name__}.{modname}"
                 try:

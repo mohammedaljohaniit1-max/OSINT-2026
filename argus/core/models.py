@@ -53,6 +53,7 @@ class EntityType(str, Enum):
     ONION = "onion"                    # dark web service
     DORK_HIT = "dork_hit"              # a search-engine dork result
     GEO = "geo"
+    PERSONA = "persona"                # a fused person identity (Persona Hunter)
     UNKNOWN = "unknown"
 
 
