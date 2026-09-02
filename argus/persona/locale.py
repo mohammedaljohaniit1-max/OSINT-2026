@@ -93,7 +93,8 @@ CANON_NAME_MAP: dict[str, list[str]] = {
     "تركي": ["turki"], "بندر": ["bandar"], "ماجد": ["majed", "majid"],
     "يوسف": ["yousef", "youssef", "yusuf", "yousuf"], "ابراهيم": ["ibrahim", "ebrahim"],
     "حسن": ["hassan", "hasan"], "حسين": ["hussain", "hussein", "husain"],
-    "عبدالمجيد": ["abdulmajeed", "abdulmajid"], "فراس": ["firas", "feras", "ferras"],
+    "عبدالمجيد": ["abdulmajeed", "abdulmajid"],
+    "فراس": ["firas", "feras", "ferras", "firass", "ferass", "fras"],
     "زياد": ["ziad", "zeyad", "ziyad"], "طلال": ["talal"], "وليد": ["waleed", "walid"],
     "ناصر": ["nasser", "naser", "nasir"], "راشد": ["rashed", "rashid"],
     "سامي": ["sami", "samy"], "طارق": ["tariq", "tarek", "tarik"],
@@ -105,21 +106,36 @@ CANON_NAME_MAP: dict[str, list[str]] = {
     "منى": ["mona", "muna"], "امل": ["amal", "amel"], "شهد": ["shahad", "shahd"],
     "جواهر": ["jawaher", "jawahir"], "العنود": ["alanoud", "anoud"],
     # tribes / family names
-    "الحربي": ["alharbi", "harbi", "al-harbi", "elharbi"],
-    "العتيبي": ["alotaibi", "otaibi", "al-otaibi", "aloteibi"],
-    "القحطاني": ["alqahtani", "qahtani", "al-qahtani", "alkahtani"],
-    "الغامدي": ["alghamdi", "ghamdi", "al-ghamdi"],
-    "الشمري": ["alshammari", "shammari", "al-shammari", "alshamri"],
-    "الدوسري": ["aldosari", "dosari", "al-dosari", "aldossary"],
-    "المطيري": ["almutairi", "mutairi", "al-mutairi", "almtairi"],
-    "الزهراني": ["alzahrani", "zahrani", "al-zahrani"],
-    "الشهري": ["alshehri", "shehri", "al-shehri", "alshahri"],
-    "العنزي": ["alanazi", "anazi", "al-anazi", "alenezi", "enezi"],
-    "السبيعي": ["alsubaie", "subaie", "al-subaie", "alsubaiei"],
-    "البقمي": ["albqami", "bqami", "albogami", "albugami"],
-    "الجهني": ["aljuhani", "juhani", "al-juhani", "aljohani", "johani"],
-    "العمري": ["alomari", "omari", "al-omari", "alamri", "amri"],
-    "الرشيدي": ["alrashidi", "rashidi", "al-rashidi"],
+    # NOTE: real Saudi social handles overwhelmingly use the -y / -ee / -ie
+    # ending ('Alharby', 'Alharbe') far more than the textbook -i ('Alharbi').
+    # We include ALL of them (with and without the 'al' article, with and
+    # without a hyphen) because people spell their own tribe name every way.
+    "الحربي": ["alharbi", "alharby", "alharbe", "harbi", "harby",
+               "al-harbi", "al-harby", "elharbi", "elharby", "alhrbi"],
+    "العتيبي": ["alotaibi", "alotaiby", "otaibi", "otaiby", "al-otaibi",
+                "aloteibi", "aloteiby", "alutaibi"],
+    "القحطاني": ["alqahtani", "alqahtany", "qahtani", "qahtany",
+                 "al-qahtani", "alkahtani", "alkahtany"],
+    "الغامدي": ["alghamdi", "alghamdy", "ghamdi", "ghamdy", "al-ghamdi"],
+    "الشمري": ["alshammari", "alshammary", "shammari", "shammary",
+               "al-shammari", "alshamri", "alshamary"],
+    "الدوسري": ["aldosari", "aldosary", "dosari", "dosary", "al-dosari",
+                "aldossary", "aldossari"],
+    "المطيري": ["almutairi", "almutairy", "mutairi", "mutairy",
+                "al-mutairi", "almtairi", "almuteiri"],
+    "الزهراني": ["alzahrani", "alzahrany", "zahrani", "zahrany", "al-zahrani"],
+    "الشهري": ["alshehri", "alshehry", "shehri", "shehry", "al-shehri",
+               "alshahri", "alshahry"],
+    "العنزي": ["alanazi", "alanazy", "anazi", "anazy", "al-anazi",
+               "alenezi", "alenezy", "enezi"],
+    "السبيعي": ["alsubaie", "alsubaiy", "subaie", "al-subaie", "alsubaiei",
+                "alsbaie"],
+    "البقمي": ["albqami", "albqamy", "bqami", "albogami", "albugami", "albogamy"],
+    "الجهني": ["aljuhani", "aljuhany", "juhani", "juhany", "al-juhani",
+               "aljohani", "aljohany", "johani"],
+    "العمري": ["alomari", "alomary", "omari", "omary", "al-omari",
+               "alamri", "alamry", "amri"],
+    "الرشيدي": ["alrashidi", "alrashidy", "rashidi", "rashidy", "al-rashidi"],
     "الخالدي": ["alkhaldi", "khaldi", "al-khalidi"],
     "الاحمدي": ["alahmadi", "ahmadi", "al-ahmadi"],
     "السلمي": ["alsulami", "sulami", "al-sulami", "alsalmi"],
@@ -194,6 +210,18 @@ def latin_variants(word: str, limit: int = 6) -> list[str]:
         for base in list(out):
             if a in base:
                 out.add(base.replace(a, b))
+    # trailing-vowel variants: real handles swap the final i<->y<->ee freely
+    # ('alharbi' vs 'alharby' vs 'harbee'). generate them for EVERY form so
+    # names not in the canonical map still reach the common spelling.
+    for base in list(out):
+        if base.endswith("i"):
+            out.add(base[:-1] + "y")
+            out.add(base[:-1] + "ee")
+        elif base.endswith("y"):
+            out.add(base[:-1] + "i")
+        elif base.endswith("ee"):
+            out.add(base[:-2] + "i")
+            out.add(base[:-2] + "y")
     # al- family prefix handling
     if w.startswith("al") and len(w) > 3:
         out.add(w[2:])           # harbi

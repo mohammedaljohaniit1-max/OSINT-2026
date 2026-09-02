@@ -38,7 +38,19 @@ def _clean_handle(h: str) -> str:
 
 
 def generate_usernames(name: NormalizedName, limit: int = 60) -> list[str]:
-    """Return up to `limit` ranked candidate handles (folded, ascii-only)."""
+    """Return up to `limit` ranked candidate handles (folded, ascii-only).
+
+    Ranking philosophy (this is the intelligence):
+      * The PRIMARY spelling of each name part (the first Latin variant, e.g.
+        'firas' / 'alharbi') is what a person overwhelmingly uses — it ranks
+        far above secondary transliterations ('feras', 'harby', ...).
+      * The FULL family form ('alharbi') and the article-dropped short form
+        ('harbi') are BOTH first-class: real handles use either. We never let
+        one starve the other out of the top-N.
+      * Format quality (given.family / givenfamily / initial+family) dominates
+        the ordering — raw string length is only the final, weakest tiebreak,
+        so 'firas.alharbi' is NOT pushed below 'frasharbi' just for being longer.
+    """
     # Only Latin spellings are usable as handles (platforms want ascii).
     def latin_only(variants):
         return [v for v in variants if not any("\u0600" <= c <= "\u06FF" for c in v)]
@@ -58,39 +70,76 @@ def generate_usernames(name: NormalizedName, limit: int = 60) -> list[str]:
         mids += latin_only(name.part_variants[i])
 
     given_vars = given_vars or [""]
-    ranked: list[tuple[int, str]] = []
+
+    # variant-index penalty: the 1st (canonical) spelling is free, each further
+    # transliteration costs a little rank so canonical handles always surface.
+    # BUT the article-dropped short form ('harbi' vs 'alharbi') is a legitimate
+    # *handle style*, not a worse spelling — so it inherits the penalty of the
+    # full form it derives from instead of being buried at the end of the list.
+    def _variant_penalties(variants):
+        pen, base_rank = {}, {}
+        rank = 0
+        for v in variants:
+            fv = fold(v)
+            # a form that is another form with a leading 'al'/'el' stripped
+            # shares that parent's rank (both are tier-equal handle styles)
+            parent = None
+            for u in variants:
+                fu = fold(u)
+                if fu != fv and (fu == "al" + fv or fu == "el" + fv):
+                    parent = u
+                    break
+            if parent is not None and parent in base_rank:
+                pen[v] = base_rank[parent]
+            else:
+                base_rank[v] = rank
+                pen[v] = rank
+                rank += 1
+        return {v: min(r, 5) * 3 for v, r in pen.items()}
+
+    g_pen = _variant_penalties(given_vars)
+    f_pen = _variant_penalties(family_vars)
+
+    ranked: list[tuple[int, int, str]] = []
     seen: set[str] = set()
+    _order = 0
 
     def push(handle: str, rank: int):
+        nonlocal _order
         h = _clean_handle(handle)
         if not h or len(h) < 3 or len(h) > 30:
             return
         if h in seen:
             return
         seen.add(h)
-        ranked.append((rank, h))
+        # stable insertion order as a mid-tiebreak keeps canonical-first
+        ranked.append((rank, _order, h))
+        _order += 1
 
     # ---- Tier 0: the classic first+last patterns (highest probability) ----
     for g in given_vars:
         gi = g[0] if g else ""
+        gp = g_pen.get(g, 0)
         for f in family_vars or [""]:
+            fp = f_pen.get(f, 0)
+            base = gp + fp                     # spelling-variant penalty
             if not f:
                 # given-only handles
-                push(g, 30)
+                push(g, 30 + base)
                 for y in _YEARS[1:8]:
-                    push(g + y, 60)
+                    push(g + y, 60 + base)
                 continue
             for sep in _SEPS:
-                push(f"{g}{sep}{f}", 0)        # firas.alharbi  (best)
-                push(f"{f}{sep}{g}", 12)       # alharbi.firas
-            push(f"{gi}{f}", 8)                # falharbi
+                push(f"{g}{sep}{f}", 0 + base)   # firas.alharbi / firasalharbi (best)
+                push(f"{f}{sep}{g}", 12 + base)  # alharbi.firas
+            push(f"{gi}{f}", 8 + base)           # falharbi
             for sep in _SEPS:
-                push(f"{gi}{sep}{f}", 10)      # f.alharbi
-            push(f"{g}{f[0]}", 20)             # firasa
+                push(f"{gi}{sep}{f}", 10 + base) # f.alharbi
+            push(f"{g}{f[0]}", 20 + base)        # firasa
             # with year suffixes on the strongest pattern
             for y in _YEARS[1:10]:
-                push(f"{g}{f}{y}", 40)
-                push(f"{g}.{f}{y}", 45)
+                push(f"{g}{f}{y}", 40 + base)
+                push(f"{g}.{f}{y}", 45 + base)
 
     # ---- Tier 1: middle-name inclusions ----
     for g in given_vars[:2]:
@@ -100,8 +149,9 @@ def generate_usernames(name: NormalizedName, limit: int = 60) -> list[str]:
                     push(f"{g}.{m}.{f}", 50)
                     push(f"{g}{m}{f}", 55)
 
-    ranked.sort(key=lambda x: (x[0], len(x[1])))
-    return [h for _, h in ranked[:limit]]
+    # rank first, then original push order, then length as the weakest tiebreak
+    ranked.sort(key=lambda x: (x[0], x[1], len(x[2])))
+    return [h for _, _, h in ranked[:limit]]
 
 
 def display_name_queries(name: NormalizedName) -> list[str]:

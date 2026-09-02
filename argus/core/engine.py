@@ -114,6 +114,16 @@ class Engine:
             v = ent.value.lower()
             if not (v == root or v.endswith("." + root)):
                 return False
+        # PERSON/PHONE/EMAIL/USERNAME-rooted scope guard: when we're investigating
+        # a *person* (not a domain), a discovered ORG or GEO is almost always a
+        # generic FACT (phone carrier, country, an employer name) — NOT an asset
+        # that belongs to the target. Expanding it drags in a whole corporation's
+        # infrastructure (the "carrier Lebara -> 615 entities" contamination).
+        # So for non-domain investigations we never cascade ORG/GEO.
+        seed_type = self.graph.run_meta.get("target_type")
+        if seed_type in ("person", "phone", "email", "username"):
+            if ent.type in (EntityType.ORG, EntityType.GEO):
+                return False
         return True
 
     def _select_pending(self):
