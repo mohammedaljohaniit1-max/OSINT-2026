@@ -68,5 +68,8 @@ try:
 except Exception as ex:
     check(f"BUG6 crtsh survives non-list response (crashed: {ex})", False)
 
-print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
-sys.exit(1 if FAIL else 0)
+if __name__ == "__main__":
+    print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
+    sys.exit(1 if FAIL else 0)
+else:
+    assert not FAIL, "; ".join(FAIL)

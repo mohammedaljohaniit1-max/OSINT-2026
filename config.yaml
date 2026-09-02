@@ -1,23 +1,29 @@
-# Argus configuration — EVERYTHING works with these defaults, NO API keys.
-profile: standard          # quick | standard | deep | stealth | monitor
-concurrency: 12
+# Argus configuration — public no-key sources work by default; optional tools
+# and keys expand coverage. Missing capabilities are reported as unavailable.
+profile: deep              # quick | standard | deep | stealth | monitor
+concurrency: 16
 timeout: 25
-retries: 2
+retries: 3
 rate_limit_per_host: 3.0
+module_timeout: 180        # per-module ceiling; profiles may override
+scan_budget: 0             # 0 = profile default
+max_response_bytes: 5000000
 
 # networking
 use_tor: false
 tor_socks: "socks5h://127.0.0.1:9050"
 proxies: []
-searxng_url: "http://127.0.0.1:8888"   # local meta-search for dorking
+verify_tls: true            # use --insecure only in isolated labs
+searxng_url: "http://127.0.0.1:8888"   # optional local meta-search
 
 # behavior
-active_scan: false          # port scan / live probing (deep profile turns on)
-verify_smtp: false          # SMTP RCPT email verification (deep profile)
-max_subdomains_resolve: 5000
+active_scan: false          # active probing requires explicit --active
+verify_smtp: false          # SMTP RCPT requires explicit --smtp
+phone_region: ""            # ISO code required for ambiguous local numbers
+max_subdomains_resolve: 30000
 output_dir: "reports"
 
-# OPTIONAL keys — NONE are required. Leave blank for full no-key operation.
+# OPTIONAL keys — none are mandatory; leaving them blank can reduce coverage/rate limits.
 keys:
   github: ""                # optional: higher GitHub dork rate limit
   shodan: ""                # optional: enrich favicon pivots

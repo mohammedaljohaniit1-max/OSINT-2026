@@ -52,8 +52,20 @@ def write_reports(graph: IntelGraph, outdir: str = "reports") -> dict:
 
 # --------------------------------------------------------------------------- #
 def _sorted_entities(graph):
+    order = {"confirmed": 0, "observed": 1, "inferred": 2,
+             "candidate": 3, "unknown": 4, "rejected": 5, "unavailable": 6}
     return sorted(graph.entities.values(),
-                  key=lambda e: (-e.risk.score, -e.confidence))
+                  key=lambda e: (order.get(e.state.value, 9),
+                                 -e.risk.score, -e.confidence))
+
+
+def _coverage(graph: IntelGraph) -> dict:
+    runs = graph.run_meta.get("module_runs", [])
+    counts: dict[str, int] = {}
+    for run in runs:
+        status = run.get("status", "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return {"runs": runs, "counts": counts}
 
 
 def _markdown(graph: IntelGraph) -> str:
@@ -65,6 +77,22 @@ def _markdown(graph: IntelGraph) -> str:
     out.append(f"- **Duration:** {m.get('duration')}s")
     out.append(f"- **Entities:** {st['total_entities']}  |  "
                f"**Relationships:** {st['total_relationships']}")
+    out.append(f"- **TLS verification:** {m.get('http', {}).get('tls_verified', 'unknown')}")
+    out.extend(["", "## Truth Summary"])
+    for state in ("confirmed", "observed", "inferred", "candidate", "unknown", "rejected"):
+        if st.get("by_state", {}).get(state):
+            out.append(f"- **{state.upper()}**: {st['by_state'][state]}")
+    out.extend(["", "> Candidates are analyst leads, not proof of identity or ownership.",
+                "", "## Source Coverage"])
+    coverage = _coverage(graph)
+    if coverage["runs"]:
+        out.append("- " + " | ".join(f"**{k}**: {v}" for k, v in sorted(coverage["counts"].items())))
+        for run in coverage["runs"]:
+            if run.get("status") in {"failed", "timeout", "unavailable", "partial", "blocked"}:
+                detail = run.get("detail") or run.get("error_class") or "no detail"
+                out.append(f"  - `{run.get('module')}`: **{run.get('status')}** — {detail}")
+    else:
+        out.append("- Legacy scan: no execution ledger available.")
     out.append("")
     out.append("## Risk Summary")
     for r in ("critical", "high", "medium", "low", "info"):
@@ -76,7 +104,7 @@ def _markdown(graph: IntelGraph) -> str:
     for e in _sorted_entities(graph):
         if e.risk.score >= RiskLevel.HIGH.score:
             out.append(f"- `[{e.risk.value.upper()}]` **{e.type.value}** "
-                       f"`{e.value}` (conf {e.confidence:.0%}, "
+                       f"`{e.value}` (state **{e.state.value}**, conf {e.confidence:.0%}, "
                        f"sources: {', '.join(sorted(e.sources))})")
     out.append("")
     out.append("## All Findings by Type")
@@ -86,8 +114,15 @@ def _markdown(graph: IntelGraph) -> str:
             continue
         out.append(f"### {etype.value} ({len(ents)})")
         for e in sorted(ents, key=lambda x: -x.confidence)[:200]:
-            out.append(f"- `{e.value}` — {e.risk.value}, {e.confidence:.0%}")
+            out.append(f"- `{e.value}` — state **{e.state.value}**, "
+                       f"risk {e.risk.value}, confidence {e.confidence:.0%}")
         out.append("")
+    out.extend(["## Limitations", "",
+        "- Public pages can be blocked, rate-limited, login-gated, deleted, or stale.",
+        "- Username existence does not prove that the target owns the account.",
+        "- Name and city matches remain candidates without independent linking evidence.",
+        "- Carrier metadata may describe original allocation, not the current operator.",
+        "- Empty/unavailable sources are coverage states, not negative findings."])
     return "\n".join(out)
 
 
@@ -109,8 +144,9 @@ def _gexf(graph: IntelGraph) -> str:
 <nodes>{''.join(nodes)}</nodes><edges>{''.join(edges)}</edges></graph></gexf>"""
 
 
-_VERDICT_COLOR = {"confirmed": "#2ecc71", "likely": "#f1c40f",
-                  "possible": "#e67e22", "rejected": "#7f8c8d"}
+_VERDICT_COLOR = {"confirmed": "#2ecc71", "candidate": "#f1c40f",
+                  "likely": "#f1c40f", "possible": "#e67e22",
+                  "rejected": "#7f8c8d"}
 
 
 def _persona_section(graph: IntelGraph) -> str:
@@ -135,7 +171,8 @@ def _persona_section(graph: IntelGraph) -> str:
     # sort personas: confirmed first, then by aggregate score
     def _key(p):
         v = p.metadata.get("verdict", "possible")
-        order = {"confirmed": 0, "likely": 1, "possible": 2, "rejected": 3}
+        order = {"confirmed": 0, "candidate": 1, "likely": 2,
+                 "possible": 3, "rejected": 4}
         return (order.get(v, 4), -p.metadata.get("aggregate_score", 0))
 
     for p in sorted(personas, key=_key):
@@ -193,6 +230,7 @@ def _html(graph: IntelGraph) -> str:
         rows += (f'<tr class="r-{e.risk.value}">'
                  f'<td><span class="pill" style="background:{RISK_COLORS[e.risk.value]}">'
                  f'{e.risk.value.upper()}</span></td>'
+                 f'<td><b>{e.state.value.upper()}</b></td>'
                  f'<td>{e.type.value}</td>'
                  f'<td class="val">{html.escape(e.value[:90])}</td>'
                  f'<td>{e.confidence:.0%}</td>'
@@ -206,6 +244,23 @@ def _html(graph: IntelGraph) -> str:
     gedges = json.dumps([
         {"from": r.src_id, "to": r.dst_id, "label": r.rel_type}
         for r in graph.relationships.values()][:800])
+
+    coverage = _coverage(graph)
+    coverage_badges = "".join(
+        f'<span class="tag">{html.escape(k)}: {v}</span>'
+        for k, v in sorted(coverage["counts"].items())) or '<span class="tag">legacy scan: no ledger</span>'
+    coverage_rows = ""
+    for run in coverage["runs"]:
+        coverage_rows += (
+            f'<tr><td>{html.escape(str(run.get("module", "")))}</td>'
+            f'<td>{html.escape(str(run.get("target", ""))[:60])}</td>'
+            f'<td><b>{html.escape(str(run.get("status", "")))}</b></td>'
+            f'<td>{run.get("duration", 0)}s</td><td>{run.get("entities_added", 0)}</td>'
+            f'<td class="src">{html.escape(str(run.get("detail") or run.get("error_class") or ""))}</td></tr>')
+    state_cards = "".join(
+        f'<div class="card"><div class="num">{st.get("by_state", {}).get(s, 0)}</div>'
+        f'<div class="lbl">{s.upper()}</div></div>'
+        for s in ("confirmed", "observed", "inferred", "candidate"))
 
     # by-type breakdown
     bytype = ""
@@ -262,17 +317,27 @@ border-radius:8px;color:#e6e6e6}}
 &nbsp;·&nbsp; Profile: {m.get('profile')} &nbsp;·&nbsp; Duration: {m.get('duration')}s
 &nbsp;·&nbsp; {time.strftime('%Y-%m-%d %H:%M')}</div></header>
 <div class="wrap">
-<div class="cards">{cards}</div>
-<div>{bytype}</div>
+<h2>Truth Summary</h2><div class="cards">{state_cards}</div>
+<p class="pctx"><b>Candidate ≠ confirmed.</b> Existence, identity ownership, and security risk are separate judgements.</p>
+<h2>Risk Summary</h2><div class="cards">{cards}</div><div>{bytype}</div>
+<h2>Source Coverage</h2><div>{coverage_badges}</div>
+<table><thead><tr><th>Module</th><th>Target</th><th>Status</th><th>Time</th><th>New</th><th>Detail</th></tr></thead>
+<tbody>{coverage_rows}</tbody></table>
 {persona_html}
 <h2>Relationship Graph</h2>
 <div id="net"></div>
 <h2>Findings ({st['total_entities']})</h2>
 <input class="searchbox" id="q" placeholder="filter findings…"
  onkeyup="filt()">
-<table id="tbl"><thead><tr><th>Risk</th><th>Type</th><th>Value</th>
+<table id="tbl"><thead><tr><th>Risk</th><th>State</th><th>Type</th><th>Value</th>
 <th>Conf</th><th>Sources</th><th>Evidence</th></tr></thead><tbody>{rows}</tbody></table>
-<div class="foot">Generated by Argus — Zero-API OSINT Engine.
+<h2>Limitations</h2><ul class="pctx">
+<li>Public sources may be blocked, stale, rate-limited, or login-gated.</li>
+<li>Username existence does not prove ownership by the target.</li>
+<li>Name and city similarity remains a candidate until independent linking evidence exists.</li>
+<li>Phone carrier metadata can reflect original allocation rather than the current operator.</li>
+<li>Unavailable/failed sources are coverage gaps, not negative findings.</li></ul>
+<div class="foot">Generated by Argus — Evidence-aware, zero-mandatory-key OSINT Engine.
 For authorized security assessments only.</div>
 </div>
 <script>

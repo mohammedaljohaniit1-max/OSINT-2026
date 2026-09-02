@@ -15,6 +15,7 @@ import asyncio
 import random
 import time
 from collections import defaultdict
+from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
 try:
@@ -45,6 +46,8 @@ class HttpClient:
         self.cfg = config
         self.rl = RateLimiter(config.rate_limit_per_host)
         self._client: Optional["httpx.AsyncClient"] = None
+        self.events: list[dict[str, Any]] = []
+        self.status_counts: dict[str, int] = defaultdict(int)
 
     def _headers(self, extra: dict | None = None) -> dict:
         h = {
@@ -73,7 +76,7 @@ class HttpClient:
                 timeout=self.cfg.timeout,
                 follow_redirects=True,
                 proxy=proxy,
-                verify=False,
+                verify=self.cfg.verify_tls,
             )
 
     @staticmethod
@@ -83,9 +86,43 @@ class HttpClient:
         except IndexError:
             return url
 
+    def _record(self, method: str, url: str, *, status: int = 0,
+                error: str = "", attempt: int = 0, elapsed: float = 0.0):
+        key = str(status) if status else "error"
+        self.status_counts[key] += 1
+        # Keep a bounded audit trail. Successful 2xx requests are summarized by
+        # status_counts; non-success events retain enough context to diagnose gaps.
+        if error or status in (403, 408, 429) or status >= 500:
+            self.events.append({
+                "method": method, "host": self._host(url), "status": status,
+                "error": error[:300], "attempt": attempt,
+                "elapsed": round(elapsed, 3), "timestamp": time.time(),
+            })
+            if len(self.events) > 500:
+                del self.events[:100]
+
+    @staticmethod
+    def _retry_after(response, fallback: float) -> float:
+        value = getattr(response, "headers", {}).get("Retry-After", "")
+        if not value:
+            return fallback
+        try:
+            return min(60.0, max(0.0, float(value)))
+        except (TypeError, ValueError):
+            try:
+                return min(60.0, max(0.0,
+                    parsedate_to_datetime(value).timestamp() - time.time()))
+            except Exception:
+                return fallback
+
+    def _too_large(self, response) -> bool:
+        raw = getattr(response, "content", b"") or b""
+        return len(raw) > int(self.cfg.max_response_bytes)
+
     async def get(self, url: str, *, params=None, headers=None, expect="text") -> Any:
         await self.rl.wait(self._host(url))
         for attempt in range(self.cfg.retries + 1):
+            started = time.monotonic()
             try:
                 if HAVE_HTTPX:
                     await self._ensure()
@@ -95,14 +132,26 @@ class HttpClient:
                 else:
                     r = await asyncio.to_thread(
                         requests.get, url, params=params,
-                        headers=self._headers(headers),
-                        timeout=self.cfg.timeout, verify=False,
-                        proxies=self._req_proxies(),
+                        headers=self._headers(headers), timeout=self.cfg.timeout,
+                        verify=self.cfg.verify_tls, proxies=self._req_proxies(),
                     )
-                if r.status_code >= 500:
-                    raise IOError(f"server {r.status_code}")
+                status = int(getattr(r, "status_code", 0))
+                self._record("GET", url, status=status, attempt=attempt,
+                             elapsed=time.monotonic() - started)
+                if self._too_large(r):
+                    self._record("GET", url, status=status, attempt=attempt,
+                                 error="response exceeds configured size limit")
+                    return None
+                if status == 429 or status >= 500:
+                    if attempt >= self.cfg.retries:
+                        return self._decode(r, expect) if expect == "response" else None
+                    await asyncio.sleep(self._retry_after(
+                        r, 1.5 * (attempt + 1) + random.random()))
+                    continue
                 return self._decode(r, expect)
-            except Exception:
+            except Exception as exc:
+                self._record("GET", url, error=f"{type(exc).__name__}: {exc}",
+                             attempt=attempt, elapsed=time.monotonic() - started)
                 if attempt >= self.cfg.retries:
                     return None
                 await asyncio.sleep(1.5 * (attempt + 1) + random.random())
@@ -111,6 +160,7 @@ class HttpClient:
     async def post(self, url, *, data=None, json=None, headers=None, expect="text"):
         await self.rl.wait(self._host(url))
         for attempt in range(self.cfg.retries + 1):
+            started = time.monotonic()
             try:
                 if HAVE_HTTPX:
                     await self._ensure()
@@ -120,12 +170,25 @@ class HttpClient:
                 else:
                     r = await asyncio.to_thread(
                         requests.post, url, data=data, json=json,
-                        headers=self._headers(headers),
-                        timeout=self.cfg.timeout, verify=False,
-                        proxies=self._req_proxies(),
+                        headers=self._headers(headers), timeout=self.cfg.timeout,
+                        verify=self.cfg.verify_tls, proxies=self._req_proxies(),
                     )
+                status = int(getattr(r, "status_code", 0))
+                self._record("POST", url, status=status, attempt=attempt,
+                             elapsed=time.monotonic() - started)
+                if self._too_large(r):
+                    self._record("POST", url, status=status,
+                                 error="response exceeds configured size limit")
+                    return None
+                if status == 429 or status >= 500:
+                    if attempt >= self.cfg.retries:
+                        return self._decode(r, expect) if expect == "response" else None
+                    await asyncio.sleep(self._retry_after(r, 1.5 * (attempt + 1)))
+                    continue
                 return self._decode(r, expect)
-            except Exception:
+            except Exception as exc:
+                self._record("POST", url, error=f"{type(exc).__name__}: {exc}",
+                             attempt=attempt, elapsed=time.monotonic() - started)
                 if attempt >= self.cfg.retries:
                     return None
                 await asyncio.sleep(1.5 * (attempt + 1))
@@ -156,8 +219,9 @@ class HttpClient:
 
 # convenience sync wrapper for simple scripts / testing
 def sync_get(url, **kw):
-    from .. .core.config import Config  # noqa
+    """Small secure-by-default sync helper used by maintenance scripts."""
     import requests as _r
-    return _r.get(url, timeout=20, verify=False,
+    verify = kw.pop("verify", True)
+    return _r.get(url, timeout=20, verify=verify,
                   headers={"User-Agent": random.choice(
                       __import__("argus.core.config", fromlist=["DEFAULT_UAS"]).DEFAULT_UAS)}, **kw)

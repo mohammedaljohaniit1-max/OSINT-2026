@@ -32,6 +32,11 @@ class ProfileHit:
     score: int = 0
     verdict: str = "possible"
     reasons: list[str] = field(default_factory=list)
+    origin: str = ""
+    existence_confidence: float = 0.0
+    identity_confidence: float = 0.0
+    evidence_families: list[str] = field(default_factory=list)
+    fusion_signals: list[str] = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -39,7 +44,11 @@ class ProfileHit:
             "display_name": self.display_name, "bio": self.bio,
             "location": self.location, "language": self.language,
             "links": self.links, "score": self.score, "verdict": self.verdict,
-            "reasons": self.reasons,
+            "reasons": self.reasons, "origin": self.origin,
+            "existence_confidence": self.existence_confidence,
+            "identity_confidence": self.identity_confidence,
+            "evidence_families": self.evidence_families,
+            "fusion_signals": self.fusion_signals,
         }
 
 
@@ -63,7 +72,10 @@ def fuse(hits: list[ProfileHit]) -> list[list[ProfileHit]]:
 
     for i in range(n):
         for j in range(i + 1, n):
-            if _same_person(hits[i], hits[j]):
+            reason = _same_person_reason(hits[i], hits[j])
+            if reason:
+                hits[i].fusion_signals.append(reason)
+                hits[j].fusion_signals.append(reason)
                 union(i, j)
 
     clusters: dict[int, list[ProfileHit]] = {}
@@ -75,32 +87,31 @@ def fuse(hits: list[ProfileHit]) -> list[list[ProfileHit]]:
     return out
 
 
-def _same_person(a: ProfileHit, b: ProfileHit) -> bool:
-    # 1) cross-link: A's links mention B's handle or platform url
+def _same_person_reason(a: ProfileHit, b: ProfileHit) -> str:
+    """Return a strong, explainable fusion signal or an empty string.
+
+    Name+city alone is intentionally insufficient: many unrelated people share
+    both.  This also prevents weak transitive links from collapsing candidates.
+    """
     hb = L.fold(b.handle)
     for lk in a.links:
-        if hb and hb in L.fold(lk):
-            return True
+        if hb and len(hb) >= 4 and hb in L.fold(lk):
+            return f"cross-link from {a.platform} to handle {b.handle}"
     ha = L.fold(a.handle)
     for lk in b.links:
-        if ha and ha in L.fold(lk):
-            return True
-    # 2) identical non-trivial bio
+        if ha and len(ha) >= 4 and ha in L.fold(lk):
+            return f"cross-link from {b.platform} to handle {a.handle}"
     ka, kb = _bio_key(a.bio), _bio_key(b.bio)
-    if ka and len(ka) >= 20 and ka == kb:
-        return True
-    # 3) same handle stem + same city
-    if ha and ha == hb and _same_city(a.location, b.location):
-        return True
-    # 4) both CONFIRMED in the SAME city with a shared handle stem: strong
-    #    evidence it's one person across platforms (handles differ only by
-    #    separators/spelling/script). City compared via the gazetteer so
-    #    'Medina' (en) and 'المدينة المنورة' (ar) count as the same place.
-    if (a.verdict == "confirmed" and b.verdict == "confirmed"
-            and _same_city(a.location, b.location)):
-        if ha and hb and (ha in hb or hb in ha or _stem(ha) == _stem(hb)):
-            return True
-    return False
+    if ka and len(ka) >= 24 and ka == kb:
+        return "identical non-trivial profile biography"
+    if ha and len(ha) >= 5 and ha == hb and _same_city(a.location, b.location):
+        return "same normalized handle and independently declared city"
+    return ""
+
+
+def _same_person(a: ProfileHit, b: ProfileHit) -> bool:
+    """Backward-compatible boolean facade used by third-party extensions."""
+    return bool(_same_person_reason(a, b))
 
 
 def _same_city(loc_a: str, loc_b: str) -> bool:

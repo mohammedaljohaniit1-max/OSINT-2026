@@ -33,19 +33,26 @@ class Config:
     timeout: int = 25
     retries: int = 3
     rate_limit_per_host: float = 3.0        # req/sec per host
+    module_timeout: int = 120               # default passive module ceiling
+    scan_budget: int = 0                    # 0 = profile default; CLI may override
+    max_response_bytes: int = 5_000_000     # protect parsers from huge responses
 
     # networking
     user_agents: list[str] = field(default_factory=lambda: list(DEFAULT_UAS))
     use_tor: bool = False
     tor_socks: str = "socks5h://127.0.0.1:9050"
     proxies: list[str] = field(default_factory=list)
+    verify_tls: bool = True                  # disable only with explicit --insecure
     searxng_url: str = os.environ.get("ARGUS_SEARXNG", "http://127.0.0.1:8888")
 
     # behavior
     active_scan: bool = False                # port scan, live probing
     verify_smtp: bool = False                # SMTP RCPT verification
+    phone_region: str = ""                   # explicit ISO region for local numbers
     max_subdomains_resolve: int = 5000
     output_dir: str = "reports"
+    include_modules: set[str] = field(default_factory=set)  # empty = all eligible
+    exclude_modules: set[str] = field(default_factory=set)
 
     # ── PERSONA HUNTER: person-search geo context ──────────────────────────
     # When set (via `argus scan "<name>" --country .. --city ..`) the engine
@@ -69,6 +76,10 @@ class Config:
             for k, v in data.items():
                 if hasattr(cfg, k):
                     setattr(cfg, k, v)
+        # an environment override exists for isolated labs, but secure TLS is the
+        # default. The CLI's --insecure flag is intentionally explicit.
+        if os.environ.get("ARGUS_INSECURE", "").lower() in {"1", "true", "yes"}:
+            cfg.verify_tls = False
         # env overrides for keys
         for env, key in [
             ("SHODAN_API_KEY", "shodan"),
@@ -86,10 +97,12 @@ class Config:
         if profile == "quick":
             self.concurrency = 20
             self.max_subdomains_resolve = 500
+            self.module_timeout = 45
             self.active_scan = False
         elif profile == "standard":
             self.concurrency = 14
             self.active_scan = False
+            self.module_timeout = 90
             self.max_subdomains_resolve = 5000
         elif profile == "deep":
             # DEFAULT: maximum PASSIVE depth. Active probing stays OFF unless the
@@ -98,6 +111,7 @@ class Config:
             self.active_scan = False
             self.verify_smtp = False
             self.max_subdomains_resolve = 30000
+            self.module_timeout = 180
             self.retries = 3
         elif profile == "stealth":
             self.use_tor = True

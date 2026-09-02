@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from .config import Config
 from .detector import detect
-from .models import Entity, EntityType, IntelGraph, Evidence
+from .models import Entity, EntityType, IntelGraph, Evidence, FindingState
 from .registry import Registry
 from ..utils.http import HttpClient
 
@@ -67,8 +67,9 @@ class Engine:
                           "stealth": 5, "monitor": 4}.get(config.profile, 4)
         self._processed: set[str] = set()   # entity ids already fed to modules
         # scan budgets / throttling so cascades never explode
-        self._total_budget = {"quick": 120, "standard": 420, "deep": 2400,
-                              "stealth": 1200, "monitor": 420}.get(config.profile, 420)
+        profile_budget = {"quick": 120, "standard": 420, "deep": 2400,
+                          "stealth": 1200, "monitor": 420}.get(config.profile, 420)
+        self._total_budget = config.scan_budget if config.scan_budget > 0 else profile_budget
         # how many freshly-discovered entities of each type we bother to expand
         # (seed + a bounded sample; prevents "run wayback on 900 subdomains")
         self._expand_cap = {
@@ -80,6 +81,7 @@ class Engine:
                          "person": 80, "tracker_id": 40, "asn": 5, "cidr": 10},
         }.get(config.profile, None)
         self._expanded_count: dict[str, int] = {}
+        self.graph.run_meta["module_runs"] = []
 
     # entities tagged with any of these are FINDINGS, not scan scope: the
     # engine must never cascade modules into them (prevents the typosquat /
@@ -153,8 +155,26 @@ class Engine:
                     self._processed.add(ent.id)   # mark done, don't expand
                     continue
                 self._expanded_count[tname] = used + 1
-            mods = self.registry.for_type(
-                ent.type, active_ok=self.cfg.active_scan, tor_ok=self.cfg.use_tor)
+            matching = [m for m in self.registry.all() if ent.type in m.spec.accepts]
+            mods = []
+            for mod in matching:
+                if self.cfg.include_modules and mod.spec.name not in self.cfg.include_modules:
+                    self._record_run(mod.spec, ent, "skipped",
+                                     detail="not selected by include_modules")
+                    continue
+                if mod.spec.name in self.cfg.exclude_modules:
+                    self._record_run(mod.spec, ent, "skipped",
+                                     detail="disabled by exclude_modules")
+                    continue
+                if mod.spec.active and not self.cfg.active_scan:
+                    self._record_run(mod.spec, ent, "skipped",
+                                     detail="active module disabled")
+                    continue
+                if mod.spec.requires_tor and not self.cfg.use_tor:
+                    self._record_run(mod.spec, ent, "skipped",
+                                     detail="Tor required but disabled")
+                    continue
+                mods.append(mod)
             # on fan-out subdomains, drop the most expensive recursive modules
             if ent.type == EntityType.SUBDOMAIN and "seed" not in ent.tags:
                 heavy = {"wayback", "commoncrawl", "js_recon", "wayback_diff",
@@ -179,8 +199,11 @@ class Engine:
         if det.type in (EntityType.DOMAIN, EntityType.SUBDOMAIN):
             self.graph.run_meta["root_domain"] = self._registrable(det.normalized)
         seed = self.graph.add(det.type, det.normalized, confidence=det.confidence,
-                              tags={"seed"})
-        seed.add_evidence(Evidence(source="detector", snippet=det.note))
+                              state=FindingState.CONFIRMED, tags={"seed"})
+        seed.add_evidence(Evidence(
+            source="detector", source_family="local-input",
+            independence_key="operator-input", method="derivation",
+            reliability=det.confidence, snippet=det.note))
 
         # cascading waves
         overall_start = time.time()
@@ -200,6 +223,9 @@ class Engine:
                 for cls in mod_classes:
                     inst = cls(self.ctx)
                     if not inst.available():
+                        self._record_run(
+                            inst.spec, ent, "unavailable",
+                            detail=f"missing binary: {inst.spec.external_bin}")
                         continue
                     tasks.append(self._safe_run(inst, ent))
             if not tasks:
@@ -211,34 +237,98 @@ class Engine:
                     return await coro
             await asyncio.gather(*[bounded(t) for t in tasks])
 
+        self.graph.run_meta["http"] = {
+            "status_counts": dict(getattr(self.http, "status_counts", {})),
+            "notable_events": list(getattr(self.http, "events", [])),
+            "tls_verified": bool(self.cfg.verify_tls),
+        }
         await self.http.close()
         self._finalize()
         return self.graph
 
+    def _record_run(self, spec, ent, status: str, *, started: float | None = None,
+                    before_entities: int = 0, before_relationships: int = 0,
+                    detail: str = "", error_class: str = "", timeout: int = 0,
+                    http_event_start: int = 0):
+        now = time.time()
+        run = {
+            "module": spec.name,
+            "category": spec.category,
+            "source_family": spec.source_family,
+            "target_id": ent.id,
+            "target_type": ent.type.value,
+            "target": ent.value,
+            "status": status,
+            "started": started or now,
+            "finished": now,
+            "duration": round(now - started, 3) if started else 0.0,
+            "entities_added": max(0, len(self.graph.entities) - before_entities)
+                if started else 0,
+            "relationships_added": max(0, len(self.graph.relationships) - before_relationships)
+                if started else 0,
+            "timeout": timeout,
+            "detail": detail,
+            "error_class": error_class,
+            "http_events": len(getattr(self.http, "events", [])) - http_event_start if started else 0,
+        }
+        self.graph.run_meta.setdefault("module_runs", []).append(run)
+
     async def _safe_run(self, inst, ent):
         name = inst.spec.name
-        # per-module hard ceiling so one slow source never stalls the whole scan
-        budget = 120 if inst.spec.active else 60
+        budget = inst.spec.timeout or self.cfg.module_timeout
+        if inst.spec.active:
+            budget = max(budget, 120)
+        started = time.time()
+        before_ids = set(self.graph.entities)
+        before_entities = len(before_ids)
+        before_relationships = len(self.graph.relationships)
+        http_event_start = len(getattr(self.http, "events", []))
         try:
-            # accurate accounting even under concurrency: snapshot entity ids,
-            # then count only ids that are new AND cite this module as a source.
-            before_ids = set(self.graph.entities.keys())
             await asyncio.wait_for(inst.run(ent, self.graph), timeout=budget)
             new_from_me = [
                 e for eid, e in self.graph.entities.items()
                 if eid not in before_ids and name in e.sources
             ]
+            rel_added = len(self.graph.relationships) - before_relationships
+            had_http_failures = len(getattr(self.http, "events", [])) > http_event_start
             if new_from_me:
                 self.log.good(f"{name}: +{len(new_from_me)} new "
                               f"from {ent.value[:40]}")
+            status = "partial" if had_http_failures and (new_from_me or rel_added) else (
+                "empty" if not new_from_me and rel_added <= 0 else "success")
+            self._record_run(
+                inst.spec, ent, status, started=started,
+                before_entities=before_entities,
+                before_relationships=before_relationships,
+                http_event_start=http_event_start,
+                timeout=budget,
+                detail="completed with source errors" if status == "partial" else "")
         except asyncio.TimeoutError:
+            self._record_run(
+                inst.spec, ent, "timeout", started=started,
+                before_entities=before_entities,
+                before_relationships=before_relationships,
+                timeout=budget, error_class="TimeoutError",
+                detail=f"hard timeout after {budget}s",
+                http_event_start=http_event_start)
             self.log.warn(f"{name} timed out ({budget}s) on {ent.value[:30]}")
-        except Exception as e:
-            self.log.warn(f"{name} failed on {ent.value[:30]}: {e}")
+        except Exception as exc:
+            self._record_run(
+                inst.spec, ent, "failed", started=started,
+                before_entities=before_entities,
+                before_relationships=before_relationships,
+                timeout=budget, error_class=type(exc).__name__,
+                detail=str(exc)[:500], http_event_start=http_event_start)
+            self.log.warn(f"{name} failed on {ent.value[:30]}: {exc}")
 
     def _finalize(self):
         from .correlator import correlate
         correlate(self.graph)
+        runs = self.graph.run_meta.get("module_runs", [])
+        coverage: dict[str, int] = {}
+        for run in runs:
+            coverage[run["status"]] = coverage.get(run["status"], 0) + 1
+        self.graph.run_meta["module_coverage"] = coverage
         self.graph.run_meta["finished"] = time.time()
         self.graph.run_meta["duration"] = round(
             self.graph.run_meta["finished"] - self.graph.run_meta["started"], 1

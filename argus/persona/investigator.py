@@ -19,11 +19,13 @@ tool, not just a domain scanner.
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 
-from ..core.models import EntityType, IntelGraph, RiskLevel
+from ..core.models import EntityType, FindingState, IntelGraph, RiskLevel
 from ..core.module import Module, ModuleSpec
 from ..sources._base import ev
+from ..sources.username import SITES as USERNAME_SITES, classify_presence
 from . import locale as L
 from .name_engine import generate_usernames, display_name_queries
 from .geo_confirm import GeoConfirmer
@@ -31,28 +33,9 @@ from .extract import extract_profile
 from .existence import classify as classify_existence
 from .persona import ProfileHit, fuse
 
-# Platforms whose PUBLIC profile page exposes name/bio/location in HTML meta
-# (no login wall for the profile head). (label, url_template, absent_marker)
-PLATFORMS = {
-    "GitHub":      ("https://github.com/{u}", "status"),
-    "GitLab":      ("https://gitlab.com/{u}", "status"),
-    "Instagram":   ("https://www.instagram.com/{u}/", "status"),
-    "TikTok":      ("https://www.tiktok.com/@{u}", "status"),
-    "YouTube":     ("https://www.youtube.com/@{u}", "status"),
-    "Twitter/X":   ("https://x.com/{u}", "status"),
-    "Reddit":      ("https://www.reddit.com/user/{u}", "status"),
-    "Telegram":    ("https://t.me/{u}", "status"),
-    "Pinterest":   ("https://www.pinterest.com/{u}/", "status"),
-    "Medium":      ("https://medium.com/@{u}", "status"),
-    "Behance":     ("https://www.behance.net/{u}", "status"),
-    "SoundCloud":  ("https://soundcloud.com/{u}", "status"),
-    "About.me":    ("https://about.me/{u}", "status"),
-    "Gravatar":    ("https://en.gravatar.com/{u}", "status"),
-    "Keybase":     ("https://keybase.io/{u}", "status"),
-    "Linktree":    ("https://linktr.ee/{u}", "status"),
-    "Snapchat":    ("https://www.snapchat.com/add/{u}", "status"),
-    "Threads":     ("https://www.threads.net/@{u}", "status"),
-}
+# Person probing uses the same curated, platform-specific truth definitions as
+# standalone username enumeration. There is no HTTP-200-only fallback.
+PLATFORMS = {site.name: site for site in USERNAME_SITES}
 
 # how many top-ranked handles we bother to check per platform (keeps it fast)
 MAX_HANDLES = {"quick": 8, "standard": 18, "deep": 40,
@@ -106,30 +89,52 @@ class PersonaHunter(Module):
             "_rejected_count": 0,
             "_rejected_examples": [],
             "_search_engines_used": [],
+            "probe_coverage": {"attempted": 0, "present": 0, "probable": 0,
+                               "absent": 0, "unknown": 0, "blocked": 0},
         }
         self._run_pm = graph.run_meta["persona"]
 
         hits: list[ProfileHit] = []
         deadline = time.monotonic() + TIME_BUDGET.get(cfg.profile, 40)
 
-        async def probe(platform, tmpl, marker, handle):
-            url = tmpl.format(u=handle)
+        control_username = f"argus_control_{secrets.token_hex(8)}"
+        controls: dict[str, object] = {}
+
+        async def fetch_control(platform, site):
+            try:
+                controls[platform] = await asyncio.wait_for(
+                    self.ctx.http.get(site.url.format(u=control_username),
+                                      expect="response"),
+                    timeout=PER_REQUEST_TIMEOUT)
+            except Exception:
+                controls[platform] = None
+
+        # One random negative control per platform is reused across all generated
+        # handles; this detects generic pages without doubling every probe.
+        await asyncio.gather(*(fetch_control(p, s) for p, s in PLATFORMS.items()),
+                             return_exceptions=True)
+        graph.run_meta["persona"]["negative_control"] = control_username
+
+        async def probe(platform, site, handle):
+            url = site.url.format(u=handle)
+            coverage = graph.run_meta["persona"]["probe_coverage"]
+            coverage["attempted"] += 1
             try:
                 r = await asyncio.wait_for(
                     self.ctx.http.get(url, expect="response"),
                     timeout=PER_REQUEST_TIMEOUT)
-            except (asyncio.TimeoutError, Exception):
+            except Exception:
+                coverage["unknown"] += 1
                 return
-            if r is None:
+            result = classify_presence(site, handle, r, controls.get(platform))
+            coverage[result.verdict] = coverage.get(result.verdict, 0) + 1
+            if result.verdict not in {"present", "probable"}:
                 return
-            code = getattr(r, "status_code", 0)
-            body = getattr(r, "text", "") or ""
-            exists = (code == 200) if marker == "status" else (
-                code == 200 and marker.lower() not in body.lower())
-            if not exists:
-                return
-            self._score_and_record(platform, url, handle, body,
-                                   confirmer, hits, graph, origin="handle probe")
+            self._score_and_record(
+                platform, url, handle, result.body, confirmer, hits, graph,
+                origin="generated handle probe",
+                existence_confidence=0.92 if result.verdict == "present" else 0.68,
+                existence_reason=result.reason)
 
         # -- SEARCH-ENGINE DISCOVERY FIRST (finds people with 0 followers) ----
         # A person with no followers still shows up when you *search their name
@@ -178,17 +183,17 @@ class PersonaHunter(Module):
         # -- BOUNDED, TIME-BUDGETED PROBING (always returns partial results) ---
         sem = asyncio.Semaphore(PROBE_CONCURRENCY)
 
-        async def bounded(platform, tmpl, marker, handle):
+        async def bounded(platform, site, handle):
             if time.monotonic() >= deadline:
                 return
             async with sem:
                 if time.monotonic() >= deadline:
                     return
-                await probe(platform, tmpl, marker, handle)
+                await probe(platform, site, handle)
 
-        tasks = [asyncio.create_task(bounded(p, t, m, h))
+        tasks = [asyncio.create_task(bounded(p, site, h))
                  for h in handles
-                 for p, (t, m) in PLATFORMS.items()]
+                 for p, site in PLATFORMS.items()]
         remaining = max(1.0, deadline - time.monotonic())
         done, pending = await asyncio.wait(tasks, timeout=remaining)
         # cancel anything still running past the budget — we emit what we have
@@ -207,8 +212,9 @@ class PersonaHunter(Module):
         Returns [{platform, url, handle, title}] rows (deduped)."""
         from . import search_discovery as SD
         queries = SD.build_queries(name, city_meta, country)
-        # cap how many queries we fire so we stay inside the budget
-        queries = queries[:14]
+        # Select across site and language strata instead of taking the first 14
+        # (which previously starved later Latin spellings and platforms).
+        queries = SD.diverse_sample(queries, 18)
         results: list[dict] = []
         sem = asyncio.Semaphore(6)
 
@@ -340,10 +346,13 @@ class PersonaHunter(Module):
         if code != 200:
             return
         self._score_and_record(platform, url, handle, body,
-                               confirmer, hits, graph, origin=origin)
+                               confirmer, hits, graph, origin=origin,
+                               existence_confidence=0.72,
+                               existence_reason="profile URL discovered by name+city search")
 
     def _score_and_record(self, platform, url, handle, body,
-                          confirmer, hits, graph, *, origin):
+                          confirmer, hits, graph, *, origin,
+                          existence_confidence=0.5, existence_reason=""):
         """Shared scoring/verdict logic for both discovery and handle probes."""
         prof = extract_profile(body)
 
@@ -411,6 +420,9 @@ class PersonaHunter(Module):
             bio=prof.get("bio", ""), location=prof.get("location", ""),
             language=prof.get("language", ""), links=prof.get("links", []),
             score=cs.total, verdict=cs.verdict, reasons=reasons,
+            origin=origin, existence_confidence=existence_confidence,
+            identity_confidence=min(0.90, cs.total / 100),
+            evidence_families=[f"platform:{platform.lower()}"],
         ))
 
     # ------------------------------------------------------------------ #
@@ -452,43 +464,36 @@ class PersonaHunter(Module):
 
         emitted_persona = False
 
-        # ---- CONFIRMED: fuse into personas, full detail (the real answer) ----
+        # Same name + city is an exact attribute match, not proof that all pages
+        # belong to one identity. Only strong cross-links/identical authored data
+        # can promote a multi-account cluster to identity-confirmed.
         clusters = fuse(confirmed)
-        # keep the strongest few as distinct personas; fold the rest into one
-        # "additional same-city accounts" bucket to stay lean.
-        head = clusters[:self.MAX_CONFIRMED_PERSONAS]
-        tail = clusters[self.MAX_CONFIRMED_PERSONAS:]
-        for idx, cluster in enumerate(head):
+        ownership_confirmed = 0
+        for idx, cluster in enumerate(clusters[:self.MAX_LIKELY_ACCOUNTS]):
+            agg = max(h.score for h in cluster)
+            strong_fusion = len(cluster) >= 2 and any(
+                h.fusion_signals for h in cluster)
+            verdict = "confirmed" if strong_fusion else "candidate"
+            ownership_confirmed += int(strong_fusion)
+            self._make_persona(
+                graph, raw_name, country, city_disp, cluster,
+                verdict=verdict, agg=agg,
+                label=(f"{name.display()} @ {city_disp} — "
+                       f"{'linked identity' if strong_fusion else 'attribute-match candidate'}"
+                       + (f" #{idx+1}" if len(clusters) > 1 else "")),
+                risk=RiskLevel.INFO)
+            emitted_persona = True
+
+        # Right-name/city-unstated profiles remain separate candidates unless the
+        # fusion engine has a strong account-to-account signal.
+        likely_clusters = fuse(likely)
+        for idx, cluster in enumerate(likely_clusters[:self.MAX_LIKELY_ACCOUNTS]):
             agg = max(h.score for h in cluster)
             self._make_persona(
                 graph, raw_name, country, city_disp, cluster,
-                verdict="confirmed", agg=agg,
-                label=f"{name.display()} @ {city_disp}"
-                      + (f" #{idx+1}" if len(head) > 1 else ""),
-                risk=RiskLevel.HIGH)
-            emitted_persona = True
-        if tail:
-            tail_accts = [h for c in tail for h in c]
-            agg = max(h.score for h in tail_accts)
-            self._make_persona(
-                graph, raw_name, country, city_disp,
-                sorted(tail_accts, key=lambda h: h.score, reverse=True)[:self.MAX_LIKELY_ACCOUNTS],
-                verdict="confirmed", agg=agg,
-                label=f"{name.display()} @ {city_disp} — "
-                      f"{len(tail_accts)} more same-city account(s)",
-                risk=RiskLevel.HIGH)
-            emitted_persona = True
-            clusters = head + [tail_accts]  # for accurate summary count
-
-        # ---- LIKELY: ONE grouped bucket (right name, city not stated) ----
-        if likely:
-            likely = sorted(likely, key=lambda h: h.score, reverse=True)[:self.MAX_LIKELY_ACCOUNTS]
-            agg = max(h.score for h in likely)
-            self._make_persona(
-                graph, raw_name, country, city_disp, likely,
-                verdict="likely", agg=agg,
-                label=f"{name.display()} — {len(likely)} account(s), city UNCONFIRMED",
-                risk=RiskLevel.MEDIUM)
+                verdict="candidate", agg=agg,
+                label=f"{name.display()} — city unconfirmed candidate #{idx+1}",
+                risk=RiskLevel.INFO)
             emitted_persona = True
 
         # ---- POSSIBLE / REJECTED / NOISE: compact COUNT summary only ----
@@ -524,8 +529,11 @@ class PersonaHunter(Module):
         engines = pm.get("_search_engines_used", [])
         n_disc = len(pm.get("discovered_profiles", []))
         pm["result_summary"] = {
-            "confirmed_personas": len(clusters) if confirmed else 0,
-            "confirmed_accounts": len(confirmed),
+            "confirmed_personas": ownership_confirmed,
+            "confirmed_accounts": sum(len(c) for c in clusters
+                                      if len(c) >= 2 and any(h.fusion_signals for h in c)),
+            "exact_attribute_matches": len(confirmed),
+            "candidate_personas": len(clusters) + len(likely_clusters) - ownership_confirmed,
             "likely_accounts": len(likely),
             "possible_ignored": possible_count,
             "shell_discarded": shell_count,
@@ -533,7 +541,8 @@ class PersonaHunter(Module):
             "rejected_wrong_city": rej_count,
             "search_engines_used": engines,
             "search_discovered_profiles": n_disc,
-            "found_target": emitted_persona and bool(confirmed),
+            "found_target": ownership_confirmed > 0,
+            "candidate_matches_found": emitted_persona,
         }
         # actionable guidance when the search-discovery path was blind (this is
         # exactly what happened on the operator's Kali run: SearXNG down + DDG
@@ -547,33 +556,53 @@ class PersonaHunter(Module):
 
     def _make_persona(self, graph, raw_name, country, city_disp, cluster,
                       *, verdict, agg, label, risk):
+        identity_confirmed = verdict == "confirmed"
         p_ent = graph.add(
             EntityType.PERSONA, label,
-            confidence=round(agg / 100, 2), risk=risk,
+            confidence=min(0.95, round(agg / 100, 2)) if identity_confirmed
+                       else min(0.79, round(agg / 100, 2)),
+            risk=risk,
+            state=FindingState.CONFIRMED if identity_confirmed else FindingState.CANDIDATE,
             tags={"persona", "person-search", verdict, "no-expand"},
             metadata={
                 "name": raw_name, "city": city_disp, "country": country,
                 "verdict": verdict, "aggregate_score": agg,
+                "ownership_confirmed": identity_confirmed,
+                "identity_note": ("accounts linked by strong profile-authored evidence"
+                                  if identity_confirmed else
+                                  "candidate only; name/location similarity is not ownership proof"),
+                "fusion_signals": sorted({s for h in cluster for s in h.fusion_signals}),
                 "account_count": len(cluster),
                 "accounts": [h.to_dict() for h in
                              sorted(cluster, key=lambda x: x.score, reverse=True)],
             },
-            evidence=ev("persona_hunter",
-                        max(cluster, key=lambda h: h.score).url,
-                        f"{verdict} persona: {len(cluster)} account(s), "
-                        f"top score {agg}"))
+            evidence=ev(
+                "persona_hunter", max(cluster, key=lambda h: h.score).url,
+                f"{verdict} persona: {len(cluster)} account(s), top score {agg}",
+                source_family="persona-analysis", independence_key="persona-fusion",
+                method="identity-resolution", reliability=min(0.95, agg / 100)))
         for h in cluster:
             se = graph.add(
                 EntityType.SOCIAL_PROFILE, h.url,
-                confidence=round(h.score / 100, 2), risk=risk,
+                confidence=min(0.85, round(h.identity_confidence, 2)),
+                risk=RiskLevel.INFO, state=FindingState.CANDIDATE,
                 tags={"social", h.platform.lower(), "person-search",
                       h.verdict, "no-expand"},
                 metadata={"platform": h.platform, "handle": h.handle,
                           "display_name": h.display_name,
                           "location": h.location, "language": h.language,
                           "score": h.score, "verdict": h.verdict,
-                          "reasons": h.reasons, "bio": h.bio[:200]},
-                evidence=ev("persona_hunter", h.url,
-                            f"{h.platform}: {h.verdict} ({h.score})"))
-            graph.link(p_ent, se, "has_account",
-                       confidence=round(h.score / 100, 2))
+                          "reasons": h.reasons, "bio": h.bio[:200],
+                          "ownership_verdict": "candidate",
+                          "existence_confidence": h.existence_confidence,
+                          "origin": h.origin},
+                evidence=ev(
+                    "persona_hunter", h.url,
+                    f"{h.platform}: attribute match {h.verdict} ({h.score}); ownership unverified",
+                    source_family=f"platform:{h.platform.lower()}",
+                    independence_key=f"profile:{h.platform.lower()}",
+                    method="profile-attribute-matching",
+                    reliability=h.existence_confidence))
+            graph.link(p_ent, se, "candidate_account" if not identity_confirmed else "has_account",
+                       confidence=min(0.95, round(h.identity_confidence, 2)),
+                       sources={"persona_hunter"})
